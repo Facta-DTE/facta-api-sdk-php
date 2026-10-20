@@ -1,0 +1,75 @@
+name: Release
+
+# Runs when a version tag is pushed. It checks the tag against the code, runs the
+# tests, builds the ZIP for installs without Composer and publishes the GitHub
+# Release. Packagist reads the tag by itself; this workflow does not touch it.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@2.31.1
+        with:
+          php-version: "8.3"
+          extensions: curl, openssl, zip
+          coverage: none
+          ini-values: error_reporting=-1, display_errors=On
+      - name: Tag matches Facta::VERSION
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(php -r 'preg_match("/const VERSION = \x27([^\x27]+)\x27/", file_get_contents("src/Facta.php"), $m); echo $m[1] ?? "";')"
+          if [ -z "$version" ] || [ "v${version}" != "${TAG}" ]; then
+            echo "Tag ${TAG} does not match Facta::VERSION (${version})." >&2
+            exit 1
+          fi
+      - name: Tagged commit is on main
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Commit ${GITHUB_SHA} is not reachable from origin/main." >&2
+            exit 1
+          fi
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+      - name: PHPUnit
+        run: composer test
+      - name: Build the ZIP
+        run: composer build-zip
+      - name: ZIP smoke test
+        env:
+          TAG: ${{ github.ref_name }}
+        run: php scripts/zip-smoke.php "dist/facta-api-php-${TAG}.zip"
+      - name: Extract the changelog section
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          awk -v v="$version" '
+            /^## \[/ { if (on) exit; if (index($0, "## [" v "]") == 1) { on = 1; next } }
+            on { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "No CHANGELOG section for ${version}." >&2
+            exit 1
+          fi
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" "dist/facta-api-php-${TAG}.zip" \
+            --title "facta-dte/api ${TAG}" \
+            --notes-file release-notes.md \
+            --verify-tag

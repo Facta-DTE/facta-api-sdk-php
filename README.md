@@ -4,7 +4,7 @@ PHP client for the [Facta DTE](https://factadte.com) API, El Salvador's electron
 invoicing service. It talks to the API over HTTPS; **it never signs a document and never
 computes tax**. Signing, totals, IVA, correlatives and validation happen on the server.
 
-> **Status: tier 1 (0.1.0-dev).** Everything that needs only HTTP is implemented: issuing,
+> **Status: tier 1 (0.1.0).** Everything that needs only HTTP is implemented: issuing,
 > prepare/sign, queries, downloads, invalidation, returns, delivery, managed storage and the
 > catalog (see [Methods](#methods)). What needs the unlock key or local storage is **not**
 > there yet: local catalog snapshots, BYOS destinations and the restart-safe archive. Nothing

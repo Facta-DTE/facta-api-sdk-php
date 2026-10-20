@@ -6,6 +6,8 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-20
+
 ### Changed
 
 - `status()` returns an associative array, like every other method (it returned a `\stdClass`).
