@@ -134,10 +134,12 @@ customer and the items inline instead.
 
 Every failure is a `Facta\Api\FactaError`. Branch on `getErrorCode()` (the strings are the
 same as in the TypeScript SDK: `mh_rejected`, `validation_failed`, `idempotency_key_reuse`,
-`network_error`, ...), never on the message. The client retries only
-`idempotency_in_flight` and `mh_unreachable`, waiting for `Retry-After` when the server
-sends it. A network failure or timeout is reported as `network_error` and is not retried:
-the request may have arrived, so repeat it yourself with the same `Idempotency-Key`.
+`network_error`, ...), never on the message. The client retries exactly the
+codes the TypeScript SDK retries: `idempotency_in_flight`, `mh_unreachable`, `service_unavailable`,
+`correlative_unavailable`, `storage_unavailable` and `network_error` (a connection failure or
+timeout), up to `maxRetries` extra attempts, waiting for `Retry-After` when the server sends it.
+Every attempt resends the same bytes with the same `Idempotency-Key`, so a retry cannot issue twice.
+When the attempts run out the last error is thrown; any other code is final.
 
 Secrets (API key, sign key, unlock key) are removed from messages and `details`.
 

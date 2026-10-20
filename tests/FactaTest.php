@@ -175,13 +175,12 @@ final class FactaTest extends TestCase
         return [
             'rate limited' => [429, 'rate_limited'],
             'unauthorized' => [401, 'invalid_api_key'],
-            'service unavailable' => [503, 'service_unavailable'],
             'internal' => [500, 'internal_error'],
             'idempotency reuse' => [422, 'idempotency_key_reuse'],
         ];
     }
 
-    public function testNetworkFailureIsNotRetriedAndIsNamedByKind(): void
+    public function testNetworkFailureIsNamedByKind(): void
     {
         foreach ([
             TransportException::KIND_TIMEOUT => 'did not answer within',
@@ -190,7 +189,7 @@ final class FactaTest extends TestCase
         ] as $kind => $fragment) {
             $fake = new FakeTransport([FakeTransport::failure($kind)]);
             try {
-                $this->client($fake, ['timeoutMs' => 1234])->status();
+                $this->client($fake, ['timeoutMs' => 1234, 'maxRetries' => 0])->status();
                 $this->fail('FactaError expected');
             } catch (FactaError $e) {
                 $this->assertSame(FactaError::NETWORK_ERROR, $e->getErrorCode());

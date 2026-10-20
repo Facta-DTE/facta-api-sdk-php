@@ -61,6 +61,10 @@ final class Facta
     private const RETRYABLE = [
         FactaError::IDEMPOTENCY_IN_FLIGHT,
         FactaError::MH_UNREACHABLE,
+        FactaError::SERVICE_UNAVAILABLE,
+        FactaError::CORRELATIVE_UNAVAILABLE,
+        FactaError::STORAGE_UNAVAILABLE,
+        FactaError::NETWORK_ERROR,
     ];
 
     /** The routes that open the signing vault and therefore carry the second password. */

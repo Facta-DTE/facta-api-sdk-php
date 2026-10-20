@@ -181,7 +181,7 @@ final class DiagnoseTest extends ClientCase
     public function testAnUnreachableStatusIsABlockedReportNotAnException(): void
     {
         $fake = new FakeTransport([FakeTransport::failure()]);
-        $report = $this->client($fake)->diagnose();
+        $report = $this->client($fake, ['maxRetries' => 0])->diagnose();
         $this->assertSame('blocked', $report['overall']);
         $this->assertFalse($report['canIssue']);
         $this->assertSame('api', $report['checks'][0]['id']);

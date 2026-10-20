@@ -31,8 +31,10 @@ are copied to `tests/fixtures/`; never edit a copy by hand.
 - **TLS verification is never disabled.** `caBundle` is the only knob.
 - **A retry resends the same bytes.** Encode a body once per call and reuse the
   string; mint the `Idempotency-Key` once, outside the retry loop.
-- Retryable errors are exactly `idempotency_in_flight` and `mh_unreachable`
-  (as in TypeScript). Network failures are not retried.
+- Retryable errors are exactly the TypeScript `RETRYABLE` set (`client.ts`): `idempotency_in_flight`,
+  `mh_unreachable`, `service_unavailable`, `correlative_unavailable`, `storage_unavailable` and
+  `network_error` (transport failures). Safe because every attempt resends the same bytes with the
+  same `Idempotency-Key`. Everything else is final.
 - Secrets never reach a message or `details` (`Support\Redactor`).
 - Developer-facing text (messages, comments, docs) is English; the README has a
   short Spanish section. Product UI copy is not this repository's business.

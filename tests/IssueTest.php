@@ -248,7 +248,7 @@ final class IssueTest extends ClientCase
 
     public function testAFailingStatusAlsoMeansNoServerSideResolution(): void
     {
-        $fake = new FakeTransport([self::error(503, 'service_unavailable')]);
+        $fake = new FakeTransport([self::error(500, 'internal_error')]);
         $this->expectException(FactaError::class);
         $this->client($fake)->issue(['tipoDte' => '01', 'receptor' => ['customerId' => 'c'], 'items' => []]);
     }
@@ -335,5 +335,67 @@ final class IssueTest extends ClientCase
         $this->assertSame(self::KEY, self::request($fake)['headers']['X-Facta-Key']);
         $this->assertSame('us-west-2', self::request($fake)['headers']['x-region']);
         $this->assertSame(Facta::DEFAULT_BASE_URL . '/v1/dte', self::request($fake)['url']);
+    }
+
+    /** @return array<string, array{string, int}> */
+    public function retryableFailures(): array
+    {
+        return [
+            'idempotency_in_flight' => ['idempotency_in_flight', 409],
+            'mh_unreachable' => ['mh_unreachable', 502],
+            'service_unavailable' => ['service_unavailable', 503],
+            'correlative_unavailable' => ['correlative_unavailable', 503],
+            'storage_unavailable' => ['storage_unavailable', 503],
+        ];
+    }
+
+    /** @dataProvider retryableFailures */
+    public function testEachRetryableCodeIsRetriedWithTheSameBytesAndKey(string $code, int $status): void
+    {
+        $fake = new FakeTransport([self::error($status, $code), self::ok(self::SEALED)]);
+        $this->client($fake)->issue(self::FE);
+        $this->assertCount(2, $fake->requests);
+        $this->assertSame($fake->requests[0]['body'], $fake->requests[1]['body']);
+        $this->assertSame($fake->requests[0]['headers']['Idempotency-Key'], $fake->requests[1]['headers']['Idempotency-Key']);
+        $this->assertSame([250], $this->sleeps);
+    }
+
+    public function testATransportFailureIsRetriedAsNetworkError(): void
+    {
+        $fake = new FakeTransport([FakeTransport::failure(), self::ok(self::SEALED)]);
+        $this->client($fake)->issue(self::FE);
+        $this->assertCount(2, $fake->requests);
+        $this->assertSame($fake->requests[0]['body'], $fake->requests[1]['body']);
+        $this->assertSame($fake->requests[0]['headers']['Idempotency-Key'], $fake->requests[1]['headers']['Idempotency-Key']);
+    }
+
+    public function testRetriesStopAtMaxRetriesAndRetryAfterIsHonoured(): void
+    {
+        $fake = new FakeTransport([
+            FakeTransport::json(503, '{"error":{"code":"service_unavailable","message":"m"}}', ['retry-after' => '3']),
+            FakeTransport::failure(),
+            FakeTransport::failure(),
+        ]);
+        try {
+            $this->client($fake, ['maxRetries' => 2])->issue(self::FE);
+            $this->fail('FactaError expected');
+        } catch (FactaError $e) {
+            $this->assertSame(FactaError::NETWORK_ERROR, $e->getErrorCode());
+        }
+        $this->assertCount(3, $fake->requests);
+        $this->assertSame([3000, 500], $this->sleeps);
+    }
+
+    public function testANonRetryableCodeIsFinal(): void
+    {
+        $fake = new FakeTransport([self::error(422, 'mh_rejected')]);
+        try {
+            $this->client($fake)->issue(self::FE);
+            $this->fail('FactaError expected');
+        } catch (FactaError $e) {
+            $this->assertSame(FactaError::MH_REJECTED, $e->getErrorCode());
+        }
+        $this->assertCount(1, $fake->requests);
+        $this->assertSame([], $this->sleeps);
     }
 }
