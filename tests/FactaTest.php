@@ -37,9 +37,9 @@ final class FactaTest extends TestCase
         $fake = new FakeTransport([FakeTransport::json(200, '{"ok":true,"version":"1","ambiente":"00","emisor":null,"llave":{"alcances":[]}}')]);
         $status = $this->client($fake)->status();
 
-        $this->assertTrue($status->ok);
-        $this->assertSame('00', $status->ambiente);
-        $this->assertInstanceOf(\stdClass::class, $status->llave);
+        $this->assertTrue($status['ok']);
+        $this->assertSame('00', $status['ambiente']);
+        $this->assertSame(['alcances' => []], $status['llave']);
         $sent = $fake->requests[0];
         $this->assertSame('GET', $sent['method']);
         $this->assertSame(Facta::DEFAULT_BASE_URL . '/v1/status', $sent['url']);
@@ -55,7 +55,7 @@ final class FactaTest extends TestCase
     public function testDebugMemberIsNeverHandedToTheCaller(): void
     {
         $fake = new FakeTransport([FakeTransport::json(200, '{"ok":true,"debug":{"x":1}}')]);
-        $this->assertFalse(property_exists($this->client($fake)->status(), 'debug'));
+        $this->assertArrayNotHasKey('debug', $this->client($fake)->status());
     }
 
     public function testBaseUrlOverrideAndRegionOptions(): void
@@ -120,7 +120,7 @@ final class FactaTest extends TestCase
             FakeTransport::json(200, '{"ok":true}'),
         ]);
         $status = $this->client($fake)->status();
-        $this->assertTrue($status->ok);
+        $this->assertTrue($status['ok']);
         $this->assertCount(3, $fake->requests);
         $this->assertSame([2000, 500], $this->sleeps, 'Retry-After first, then exponential backoff (250 * 2^(n-1)).');
     }

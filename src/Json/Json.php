@@ -51,4 +51,29 @@ final class Json
         }
         return $value;
     }
+
+    /**
+     * Turns a decoded tree (objects as `\stdClass`) into plain associative
+     * arrays. An empty object becomes `[]`; use this for answers a caller
+     * reads, never for a document that is sent back (keep that one as decoded).
+     *
+     * @param mixed $value
+     * @return mixed
+     */
+    public static function toArray($value)
+    {
+        if ($value instanceof \stdClass) {
+            $out = [];
+            foreach (get_object_vars($value) as $key => $item) {
+                $out[$key] = self::toArray($item);
+            }
+            return $out;
+        }
+        if (is_array($value)) {
+            return array_map(static function ($item) {
+                return self::toArray($item);
+            }, $value);
+        }
+        return $value;
+    }
 }

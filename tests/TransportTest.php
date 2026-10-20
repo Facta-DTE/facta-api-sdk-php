@@ -147,7 +147,7 @@ final class TransportTest extends TestCase
     public function testStatusAgainstARealServerUsesTheDefaultTransport(): void
     {
         $client = new Facta(['apiKey' => 'facta_test_k', 'baseUrl' => self::url('/api')]);
-        $this->assertSame('/api/v1/status', $client->status()->path);
+        $this->assertSame('/api/v1/status', $client->status()['path']);
     }
 
     public function testFactoryPrefersCurlAndFallsBackToStreams(): void

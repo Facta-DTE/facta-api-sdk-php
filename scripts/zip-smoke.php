@@ -53,7 +53,7 @@ $transport = new class implements Facta\Api\Http\Transport {
 };
 $facta = new Facta\Api\Facta(['apiKey' => 'facta_test_smoke', 'transport' => $transport]);
 $status = $facta->status();
-if ($status->ok !== true || $facta->environment() !== '00') {
+if ($status['ok'] !== true || $facta->environment() !== '00') {
     fwrite(STDERR, "status() failed\n");
     exit(1);
 }

@@ -27,7 +27,7 @@ final class Psr18TransportTest extends TestCase
         });
         $facta = new Facta(['apiKey' => 'facta_test_k', 'transport' => new Psr18Transport($client, $factory, $factory)]);
 
-        $this->assertTrue($facta->status()->ok);
+        $this->assertTrue($facta->status()['ok']);
         $request = $client->requests[0];
         $this->assertSame('GET', $request->getMethod());
         $this->assertSame(Facta::DEFAULT_BASE_URL . '/v1/status', (string) $request->getUri());
