@@ -1,9 +1,17 @@
 name: CI
 
+# Runs only on pull requests that are ready for review (not drafts), and by
+# hand. A draft PR or a plain branch push spends no Actions minutes; marking the
+# PR "Ready for review" starts the run, and every later push to it re-runs.
 on:
-  push:
-    branches: [main, "claude/**"]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+# A newer push to the same PR cancels the run it replaces.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -11,6 +19,7 @@ permissions:
 jobs:
   tests:
     name: PHP ${{ matrix.php }}
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     continue-on-error: ${{ matrix.experimental }}
     strategy:
@@ -38,6 +47,7 @@ jobs:
 
   no-curl:
     name: Stream transport (no ext-curl)
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,12 +57,15 @@ jobs:
           extensions: openssl, zip, :curl
           coverage: none
           ini-values: error_reporting=-1, display_errors=On
-      - run: php -r 'exit(extension_loaded("curl") ? 1 : 0);'
+      - name: Confirm ext-curl is absent
+        run: |
+          php -r 'exit(extension_loaded("curl") ? 1 : 0);'
       - run: composer update --no-interaction --no-progress --prefer-dist
       - run: vendor/bin/phpunit
 
   static:
     name: PHPCompatibility and PHPStan
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +80,7 @@ jobs:
 
   zip:
     name: Release ZIP smoke test
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
