@@ -6,8 +6,31 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `status()` returns an associative array, like every other method (it returned a `\stdClass`).
+
+### Not yet
+
+- Local catalog snapshots, BYOS destinations and the restart-safe archive: they need the unlock
+  key. Until then, reading an encrypted catalog or issuing with `customerId` / `productId`
+  against one throws `unauthorized` (`details.reason`).
+
 ### Added
 
+- Tier 1, everything that needs only HTTP: `region()`, `servedRegion()`, `diagnose()`,
+  `issue()` (caller-owned `idempotencyKey`, `deliver`), `prepare()` / `sign()`,
+  `getDocumentStatus()`, `listDocuments()`, byte-exact `downloadDocument()` (`json`, `pdf`,
+  `ticket`), `invalidate()`, `registerReturn()`, `deliverEmail()`, `deliverWhatsApp()`,
+  `getDelivery()`, `waitForDelivery()`, `getStorageStatus()`, `getDocumentCopies()`,
+  `retryDocumentStorage()`, `listHolding()`, `getContract()` and the catalog reads and
+  writes (`listCustomers()` ... `deactivateProduct()`).
+- `X-Facta-Request-Fingerprint` (fingerprint-v1 of the unresolved request, `entrega` included) on
+  `POST /v1/dte` and `POST /v1/dte/prepare` only.
+- Storage receipts are checked against the contract and against the bytes in the same answer; a
+  receipt that does not match is replaced by `storageErrorCode`.
+- Live integration against the staging API: `scripts/live-integration.php`, its guards and report
+  (`scripts/live/`), and the workflow `sdk-live-integration.yml` with a sticky pull-request comment.
 - Package skeleton: `facta-dte/api`, namespace `Facta\Api`, PHP 7.4 and later,
   no required Composer dependency.
 - `Facta` client with `status()` (`GET /v1/status`) and the internal request loop:

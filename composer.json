@@ -41,7 +41,8 @@
     },
     "autoload-dev": {
         "psr-4": {
-            "Facta\\Api\\Tests\\": "tests/"
+            "Facta\\Api\\Tests\\": "tests/",
+            "Facta\\Api\\Live\\": "scripts/live/"
         }
     },
     "config": {

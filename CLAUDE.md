@@ -46,5 +46,12 @@ are copied to `tests/fixtures/`; never edit a copy by hand.
     composer build-zip    # dist/facta-api-php-vX.Y.Z.zip
     php scripts/zip-smoke.php dist/facta-api-php-vX.Y.Z.zip
 
+Live integration (staging, environment 00, run by the PR workflow
+`sdk-live-integration.yml`): `scripts/live-integration.php` with its helpers in
+`scripts/live/` (namespace `Facta\Api\Live`). It uses only the public API, reads the same
+`STAGING_FACTA_*` secrets as the TypeScript script and fails closed when one is missing. Its
+guards, report and whole flow are unit-tested offline (`tests/Live*Test.php`, `FakeApi`).
+Results are plain associative arrays; `prepare()` keeps `documento` as the decoded `\stdClass`.
+
 Releases: tag `vX.Y.Z` (Packagist reads the tag; the GitHub Release attaches the ZIP).
 Pushing is done by the maintainers' account; sessions may lack permission.
