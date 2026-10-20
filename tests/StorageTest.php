@@ -51,6 +51,64 @@ final class StorageTest extends ClientCase
         $this->assertSame('GET', self::request($fake)['method']);
     }
 
+    public function testStorageStatusAcceptsTheKindListsTheServerSendsToday(): void
+    {
+        // The exact lists staging and production answer since FactaDTE 9d7446e0, plus an
+        // older server's lists and a future kind: all of them meet the contract.
+        $shapes = [
+            [['json', 'pdf', 'invalidation'], ['ticket']],
+            [['json', 'pdf'], ['ticket', 'invalidation']],
+            [['pdf', 'json', 'invalidation', 'some_future_kind'], []],
+        ];
+        $responses = [];
+        foreach ($shapes as [$supported, $unsupported]) {
+            $status = self::storageStatus();
+            $status['supportedKinds'] = $supported;
+            $status['unsupportedKinds'] = $unsupported;
+            $responses[] = self::ok($status);
+        }
+        $client = $this->client(new FakeTransport($responses));
+        foreach ($shapes as [$supported]) {
+            $this->assertSame($supported, $client->getStorageStatus()['supportedKinds']);
+        }
+    }
+
+    public function testStorageStatusRejectsKindListsThatBreakTheContract(): void
+    {
+        $broken = [
+            [['json'], ['ticket']],                       // pdf missing
+            [['json', 'pdf', 'pdf'], ['ticket']],         // duplicate
+            [['json', 'pdf', 'ticket'], ['ticket']],      // both supported and unsupported
+            [['json', 'pdf', 7], ['ticket']],             // not a string
+            [['json', 'pdf'], 'ticket'],                  // not a list
+        ];
+        $responses = [];
+        foreach ($broken as [$supported, $unsupported]) {
+            $status = self::storageStatus();
+            $status['supportedKinds'] = $supported;
+            $status['unsupportedKinds'] = $unsupported;
+            $responses[] = self::ok($status);
+        }
+        $client = $this->client(new FakeTransport($responses));
+        foreach ($broken as $_) {
+            try {
+                $client->getStorageStatus();
+                $this->fail('FactaError expected');
+            } catch (FactaError $e) {
+                $this->assertSame(FactaError::STORAGE_CONTRACT_INVALID, $e->getErrorCode());
+            }
+        }
+    }
+
+    public function testDocumentCopiesIncludeTheInvalidationEventFile(): void
+    {
+        $fake = new FakeTransport([
+            self::ok(['capabilityVersion' => 1, 'copies' => [self::copy('json'), self::copy('pdf'), self::copy('invalidation')]]),
+        ]);
+        $copies = $this->client($fake)->getDocumentCopies();
+        $this->assertSame(['json', 'pdf', 'invalidation'], array_column($copies, 'kind'));
+    }
+
     public function testStorageStatusMapsAnOldServerAndRejectsABrokenContract(): void
     {
         $broken = self::storageStatus();

@@ -137,8 +137,9 @@ final class FakeApi implements Transport
                 'bucketState' => $this->managedReady ? 'ready' : null, 'backupState' => null,
             ],
             'byos' => ['ready' => false],
-            'supportedKinds' => ['json', 'pdf'],
-            'unsupportedKinds' => ['ticket', 'invalidation'],
+            // What staging and production answer since FactaDTE 9d7446e0.
+            'supportedKinds' => ['json', 'pdf', 'invalidation'],
+            'unsupportedKinds' => ['ticket'],
         ];
     }
 

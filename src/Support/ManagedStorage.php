@@ -134,15 +134,31 @@ final class ManagedStorage
         if (!is_bool($value['byos']['ready'] ?? null)) {
             return false;
         }
+        // The kind lists are capabilities, so they grow: since FactaDTE 9d7446e0 the
+        // server announces `invalidation` as a supported kind and no longer lists it
+        // as unsupported. A status must name `json` and `pdf` as supported, with no
+        // duplicates; any further kind is accepted (an exact two-item list made every
+        // getStorageStatus() on that server fail with storage_contract_invalid).
         $supported = $value['supportedKinds'] ?? null;
-        if (
-            !is_array($supported) || count($supported) !== 2 || count(array_unique($supported)) !== 2
-            || array_diff($supported, ['json', 'pdf']) !== []
-        ) {
+        if (!self::isKindList($supported) || array_diff(['json', 'pdf'], $supported) !== []) {
             return false;
         }
         $unsupported = $value['unsupportedKinds'] ?? null;
-        return is_array($unsupported) && array_diff($unsupported, ['ticket', 'invalidation']) === [];
+        return self::isKindList($unsupported) && array_intersect($supported, $unsupported) === [];
+    }
+
+    /** @param mixed $value */
+    private static function isKindList($value): bool
+    {
+        if (!is_array($value) || array_values($value) !== $value) {
+            return false;
+        }
+        foreach ($value as $kind) {
+            if (!is_string($kind) || preg_match('/^[a-z][a-z0-9_]*$/', $kind) !== 1) {
+                return false;
+            }
+        }
+        return count(array_unique($value)) === count($value);
     }
 
     /** @param mixed $value */
@@ -164,7 +180,7 @@ final class ManagedStorage
             $date = $copy['issuedDate'] ?? null;
             $parsed = is_string($date) ? \DateTime::createFromFormat('!Y-m-d', $date) : false;
             if (
-                preg_match(self::UUID, $copy['generationCode']) !== 1 || !in_array($copy['kind'], ['json', 'pdf'], true)
+                preg_match(self::UUID, $copy['generationCode']) !== 1 || !in_array($copy['kind'], ['json', 'pdf', 'invalidation'], true)
                 || !in_array($copy['environment'] ?? null, ['00', '01'], true)
                 || !in_array($copy['state'] ?? null, ['stored', 'pending', 'failed'], true)
                 || !self::validBytes($copy['bytes'] ?? null)
