@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<ruleset name="facta-api-sdk-php">
+    <description>PHPCompatibility: the SDK must run on PHP 7.4 and every later version.</description>
+    <arg name="extensions" value="php"/>
+    <arg name="colors"/>
+    <arg value="sp"/>
+    <arg name="cache" value=".phpcs-cache"/>
+    <file>src</file>
+    <file>autoload.php</file>
+    <file>scripts</file>
+    <file>tests</file>
+    <config name="testVersion" value="7.4-"/>
+    <rule ref="PHPCompatibility"/>
+</ruleset>
