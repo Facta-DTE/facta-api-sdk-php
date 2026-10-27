@@ -48,6 +48,8 @@ class FactaError extends \Exception
     public const DATA_EPOCH_STALE = 'data_epoch_stale';
     public const INBOX_RETIRED = 'inbox_retired';
     public const CATALOG_SNAPSHOT_RETIRED = 'catalog_snapshot_retired';
+    public const WEBHOOK_LIMIT_REACHED = 'webhook_limit_reached';
+    public const WEBHOOK_DUPLICATE = 'webhook_duplicate';
     public const IDEMPOTENCY_KEY_REQUIRED = 'idempotency_key_required';
     public const IDEMPOTENCY_KEY_REUSE = 'idempotency_key_reuse';
     public const IDEMPOTENCY_IN_FLIGHT = 'idempotency_in_flight';

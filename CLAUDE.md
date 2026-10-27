@@ -32,7 +32,7 @@ are copied to `tests/fixtures/`; never edit a copy by hand.
 - **A retry resends the same bytes.** Encode a body once per call and reuse the
   string; mint the `Idempotency-Key` once, outside the retry loop.
 - Retryable errors are exactly the TypeScript `RETRYABLE` set (`client.ts`): `idempotency_in_flight`,
-  `mh_unreachable`, `service_unavailable`, `correlative_unavailable`, `storage_unavailable` and
+  `mh_unreachable`, `service_unavailable`, `correlative_unavailable`, `storage_unavailable`, `data_grant_unavailable`, `data_epoch_stale` and
   `network_error` (transport failures). Safe because every attempt resends the same bytes with the
   same `Idempotency-Key`. Everything else is final.
 - Secrets never reach a message or `details` (`Support\Redactor`).

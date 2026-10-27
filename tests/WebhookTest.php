@@ -6,7 +6,7 @@ namespace Facta\Api\Tests;
 
 use Facta\Api\Facta;
 use Facta\Api\FactaError;
-use Facta\Api\MemoryReplayStore;
+use Facta\Api\MemoryWebhookReplayStore;
 use Facta\Api\Tests\Support\ClientCase;
 use Facta\Api\Tests\Support\FakeTransport;
 use Facta\Api\Webhook;
@@ -81,7 +81,7 @@ final class WebhookTest extends ClientCase
 
     public function testAReplayedDeliveryIsRefusedAndAForgeryNeverPoisonsTheStore(): void
     {
-        $store = new MemoryReplayStore();
+        $store = new MemoryWebhookReplayStore();
         $options = ['nowSeconds' => self::NOW, 'store' => $store];
         Webhook::verify(self::SECRET, self::header(self::NOW, str_repeat('1', 64)), self::BODY, $options);
         $this->assertSame(0, $store->size(), 'A bad signature is not remembered.');
@@ -93,7 +93,7 @@ final class WebhookTest extends ClientCase
     {
         $payload = Webhook::constructEvent(self::SECRET, self::header(), self::BODY, ['nowSeconds' => self::NOW]);
         $this->assertSame('r1', $payload['recordId']);
-        $this->expectException(\UnexpectedValueException::class);
+        $this->expectException(\Facta\Api\WebhookVerificationError::class);
         $this->expectExceptionMessage('bad_signature');
         Webhook::constructEvent('whsec_other', self::header(), self::BODY, ['nowSeconds' => self::NOW]);
     }
@@ -209,6 +209,22 @@ final class WebhookTest extends ClientCase
             $details = $e->getDetails();
             $this->assertInstanceOf(\stdClass::class, $details);
             $this->assertSame(9, $details->cabeza);
+        }
+    }
+
+    public function testEventsListMatchesTheContract(): void
+    {
+        $this->assertCount(9, Webhook::EVENTS);
+        $this->assertContains('catalog.restored', Webhook::EVENTS);
+    }
+
+    public function testTheErrorCarriesTheReason(): void
+    {
+        try {
+            Webhook::constructEvent(self::SECRET, null, self::BODY);
+            $this->fail('WebhookVerificationError expected');
+        } catch (\Facta\Api\WebhookVerificationError $e) {
+            $this->assertSame('malformed_header', $e->getReason());
         }
     }
 

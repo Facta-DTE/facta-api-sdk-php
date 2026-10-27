@@ -57,6 +57,8 @@ final class Facta
         FactaError::SERVICE_UNAVAILABLE,
         FactaError::CORRELATIVE_UNAVAILABLE,
         FactaError::STORAGE_UNAVAILABLE,
+        FactaError::DATA_GRANT_UNAVAILABLE,
+        FactaError::DATA_EPOCH_STALE,
         FactaError::NETWORK_ERROR,
     ];
 

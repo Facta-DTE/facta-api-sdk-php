@@ -31,9 +31,11 @@ SDK carries no copy of it. Follows the TypeScript SDK 0.6.0.
 - `ifMatch` option on `updateCustomer()` / `updateProduct()`, and `revision` on single catalogue records
   read or written on a company that shares its data key (from `Facta-Catalog-Revision` / `ETag`).
 - `listCatalogChanges()` for `GET /v1/catalog/changes?since=`.
+- `FactaError::WEBHOOK_LIMIT_REACHED`, `WEBHOOK_DUPLICATE`; `Webhook::EVENTS`; `WebhookVerificationError` (with `getReason()`) thrown by `Webhook::constructEvent()`.
+- `data_grant_unavailable` and `data_epoch_stale` (503) are retried like the other transient codes; `data_grant_revoked` (403) is final.
 - Webhooks: `createWebhook()`, `listWebhooks()`, `getWebhook()`, `updateWebhook()`, `deleteWebhook()`,
   `rotateWebhookSecret()`, `testWebhook()`, and the receiver-side `Webhook::verify()` /
-  `Webhook::constructEvent()` / `Webhook::sign()` with `ReplayStore` / `MemoryReplayStore`.
+  `Webhook::constructEvent()` / `Webhook::sign()` with `WebhookReplayStore` / `MemoryWebhookReplayStore`.
 
 ## [0.1.0] - 2026-10-20
 

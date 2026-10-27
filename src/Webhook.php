@@ -28,11 +28,18 @@ final class Webhook
     public const SIGNATURE_HEADER = 'Facta-Signature';
     public const TOLERANCE_SECONDS = 300;
 
+    /** Events a webhook can subscribe to (`webhook.test` is sent by testWebhook() and is never subscribable). */
+    public const EVENTS = [
+        'catalog.customer.created', 'catalog.customer.updated', 'catalog.customer.deactivated', 'catalog.customer.deleted',
+        'catalog.product.created', 'catalog.product.updated', 'catalog.product.deactivated', 'catalog.product.deleted',
+        'catalog.restored',
+    ];
+
     /**
      * @param string               $secret `secreto` returned by createWebhook() / rotateWebhookSecret().
      * @param string|null          $header The `Facta-Signature` header value.
      * @param string               $body   The raw request body.
-     * @param array<string, mixed> $options `nowSeconds` (int), `toleranceSeconds` (int), `store` ({@see ReplayStore}).
+     * @param array<string, mixed> $options `nowSeconds` (int), `toleranceSeconds` (int), `store` ({@see WebhookReplayStore}).
      * @return array<string, mixed> `['ok' => true, 'deliveryId', 'event', 'payload']`, or
      *         `['ok' => false, 'reason' => ...]` with one of `malformed_header`, `stale_timestamp`,
      *         `bad_signature`, `malformed_body`, `replayed`.
@@ -44,8 +51,8 @@ final class Webhook
             ? $options['toleranceSeconds']
             : self::TOLERANCE_SECONDS;
         $store = $options['store'] ?? null;
-        if ($store !== null && !($store instanceof ReplayStore)) {
-            throw new \InvalidArgumentException('store must implement Facta\Api\ReplayStore.');
+        if ($store !== null && !($store instanceof WebhookReplayStore)) {
+            throw new \InvalidArgumentException('store must implement Facta\Api\WebhookReplayStore.');
         }
 
         $t = null;
@@ -112,13 +119,13 @@ final class Webhook
      *
      * @param array<string, mixed> $options Same as verify().
      * @return array<string, mixed> The delivery body.
-     * @throws \UnexpectedValueException With the verify() reason as the message.
+     * @throws WebhookVerificationError Carrying the verify() reason.
      */
     public static function constructEvent(string $secret, ?string $header, string $body, array $options = []): array
     {
         $result = self::verify($secret, $header, $body, $options);
         if ($result['ok'] !== true) {
-            throw new \UnexpectedValueException('Webhook refused: ' . $result['reason']);
+            throw new WebhookVerificationError((string) $result['reason']);
         }
         return $result['payload'];
     }

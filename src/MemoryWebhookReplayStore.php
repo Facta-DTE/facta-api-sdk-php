@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace Facta\Api;
 
 /**
- * A {@see ReplayStore} that lives in this PHP process and forgets entries older than twice the
+ * A {@see WebhookReplayStore} that lives in this PHP process and forgets entries older than twice the
  * tolerance window (they could not verify any more anyway). Enough for tests and a single worker;
  * PHP-FPM workers do not share it.
  */
-final class MemoryReplayStore implements ReplayStore
+final class MemoryWebhookReplayStore implements WebhookReplayStore
 {
     /** @var array<string, int> */
     private $seen = [];

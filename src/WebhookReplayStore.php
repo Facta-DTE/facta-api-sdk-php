@@ -8,7 +8,7 @@ namespace Facta\Api;
  * Remembers the webhook deliveries a receiver already accepted, so a replayed request is refused.
  * A real receiver should back this with something shared between workers (a database row, Redis).
  */
-interface ReplayStore
+interface WebhookReplayStore
 {
     public function has(string $deliveryId): bool;
 

@@ -308,6 +308,8 @@ final class IssueTest extends ClientCase
             'service_unavailable' => ['service_unavailable', 503],
             'correlative_unavailable' => ['correlative_unavailable', 503],
             'storage_unavailable' => ['storage_unavailable', 503],
+            'data_grant_unavailable' => ['data_grant_unavailable', 503],
+            'data_epoch_stale' => ['data_epoch_stale', 503],
         ];
     }
 
