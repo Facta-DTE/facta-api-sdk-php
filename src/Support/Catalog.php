@@ -67,8 +67,7 @@ final class Catalog
         if ($code === FactaError::CATALOG_ENCRYPTED) {
             return 'This company\'s catalog is encrypted and the API can only change it in plain text. '
                 . 'To change it, open Facta DTE, go to ' . self::WHERE . ', switch the catalog to plain text and tick '
-                . '"Permitir administrar clientes y productos desde el API". ' . $warning
-                . ' While it stays encrypted, the catalog can only be read with the unlock key (unlockKey).';
+                . '"Permitir administrar clientes y productos desde el API". ' . $warning;
         }
         return null;
     }

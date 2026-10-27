@@ -39,6 +39,15 @@ class FactaError extends \Exception
     public const CATALOG_WRITE_DISABLED = 'catalog_write_disabled';
     public const CATALOG_ENCRYPTED = 'catalog_encrypted';
     public const CATALOG_DUPLICATE = 'catalog_duplicate';
+    public const CATALOG_REVISION_CONFLICT = 'catalog_revision_conflict';
+    public const CATALOG_RECORD_INACTIVE = 'catalog_record_inactive';
+    public const CATALOG_SEARCH_TOO_BROAD = 'catalog_search_too_broad';
+    public const CATALOG_CURSOR_EXPIRED = 'catalog_cursor_expired';
+    public const DATA_GRANT_UNAVAILABLE = 'data_grant_unavailable';
+    public const DATA_GRANT_REVOKED = 'data_grant_revoked';
+    public const DATA_EPOCH_STALE = 'data_epoch_stale';
+    public const INBOX_RETIRED = 'inbox_retired';
+    public const CATALOG_SNAPSHOT_RETIRED = 'catalog_snapshot_retired';
     public const IDEMPOTENCY_KEY_REQUIRED = 'idempotency_key_required';
     public const IDEMPOTENCY_KEY_REUSE = 'idempotency_key_reuse';
     public const IDEMPOTENCY_IN_FLIGHT = 'idempotency_in_flight';

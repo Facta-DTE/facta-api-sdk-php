@@ -83,7 +83,7 @@ final class DiagnoseTest extends ClientCase
 
         $states = self::states($report['checks']);
         foreach (['api', 'issuer', 'issuer-environment', 'scope-issue', 'scope-query', 'scope-download', 'issue-quota', 'key-expiry',
-                  'dte-type', 'signing', 'sign-sync', 'destinations-sync', 'catalog-sync', 'configured-environment', 'managed-storage',
+                  'dte-type', 'signing', 'sign-sync', 'destinations-sync', 'configured-environment', 'managed-storage',
                   'configured-scope-issue', 'environment'] as $id) {
             $this->assertSame('ok', $states[$id], $id);
         }

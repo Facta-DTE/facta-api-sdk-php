@@ -6,6 +6,35 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - proposed
+
+The shared data key: the server resolves catalogue ids and reads the catalogue in every mode, so the
+SDK carries no copy of it. Follows the TypeScript SDK 0.6.0.
+
+### Changed
+
+- **Catalogue reads always call the API** (`listCustomers()` ... `searchProducts()`). They no longer
+  read `/v1/status` first, no longer need `unlockKey`, and no longer throw `unauthorized`
+  (`local_snapshot_unsupported` / `unlock_key_missing`) for a company whose catalogue is encrypted at rest.
+- **`customerId` / `productId` in `issue()` and `prepare()` travel untouched.** The same gate no
+  longer refuses them. An unknown id is the server's `not_found` (`details.reason` `catalog_unknown_id`).
+- **No `X-Facta-Request-Fingerprint` header** on `issue()` / `prepare()`: the SDK does not rewrite the
+  body, so the server's idempotency claim hashes it. `Json\Fingerprint` stays for other uses.
+- `diagnose()` no longer reports a `catalog-sync` check. The guidance of `catalog_encrypted` no longer
+  says the catalogue can be read with the unlock key.
+
+### Added
+
+- Error codes the server now returns: `catalog_revision_conflict`, `catalog_record_inactive`,
+  `catalog_search_too_broad`, `catalog_cursor_expired`, `data_grant_unavailable`, `data_grant_revoked`,
+  `data_epoch_stale`, `inbox_retired`, `catalog_snapshot_retired` (constants on `FactaError`).
+- `ifMatch` option on `updateCustomer()` / `updateProduct()`, and `revision` on single catalogue records
+  read or written on a company that shares its data key (from `Facta-Catalog-Revision` / `ETag`).
+- `listCatalogChanges()` for `GET /v1/catalog/changes?since=`.
+- Webhooks: `createWebhook()`, `listWebhooks()`, `getWebhook()`, `updateWebhook()`, `deleteWebhook()`,
+  `rotateWebhookSecret()`, `testWebhook()`, and the receiver-side `Webhook::verify()` /
+  `Webhook::constructEvent()` / `Webhook::sign()` with `ReplayStore` / `MemoryReplayStore`.
+
 ## [0.1.0] - 2026-10-20
 
 ### Changed

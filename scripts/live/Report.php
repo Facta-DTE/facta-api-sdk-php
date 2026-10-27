@@ -17,7 +17,6 @@ final class Report
     public const LABELS = [
         'status' => 'Staging API and test environment',
         'preflight' => 'Issuance permissions and readiness',
-        'catalog' => 'Encrypted catalog snapshot opened locally',
         'customer-catalog' => 'Authorized customer catalog reads',
         'product-catalog' => 'Authorized product catalog reads',
         'catalog-write-gate' => 'Catalog writes refused while the company catalog is encrypted',
@@ -51,7 +50,7 @@ final class Report
 
     /** Checks this SDK version cannot run; the report says so instead of leaving them silent. */
     public const NOT_AVAILABLE = [
-        'catalog', 'customer-catalog', 'product-catalog', 'destinations', 'archive',
+        'customer-catalog', 'product-catalog', 'destinations', 'archive',
         'no-downloads', 'emergency-idle', 'journal', 'restart',
     ];
 
@@ -153,7 +152,7 @@ final class Report
         }
         $lines[] = 'Invoice documents and issuer/customer identifiers are not uploaded or published.';
         $lines[] = 'This test uses environment `00`; it does not issue a production invoice.';
-        $lines[] = 'Checks marked "' . self::NOT_IN_VERSION . '" need the unlock key, the local archive or catalog snapshots, which arrive in a later version of the PHP SDK.';
+        $lines[] = 'Checks marked "' . self::NOT_IN_VERSION . '" need the unlock key, the local archive or BYOS destinations, which arrive in a later version of the PHP SDK.';
         $lines[] = '';
         return implode("\n", $lines);
     }

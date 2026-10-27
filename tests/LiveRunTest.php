@@ -74,7 +74,6 @@ final class LiveRunTest extends TestCase
         $this->assertSame('Passed (writes refused for the encrypted CI company)', $checks['catalog-write-gate']);
         $this->assertSame('Not run (no test inbox configured)', $checks['email-delivery']);
         $this->assertSame('Not in this SDK version', $checks['archive']);
-        $this->assertSame('Not in this SDK version', $checks['catalog']);
         $this->assertNull($run->failureCode());
         $this->assertSame([], $this->err);
     }
@@ -96,7 +95,7 @@ final class LiveRunTest extends TestCase
             '{"tipoDte":"01","items":[{"descripcion":"Facta API SDK integration test","cantidad":1,"precioUni":0.01}]}',
             $issues[0]['body']
         );
-        $this->assertArrayHasKey('X-Facta-Request-Fingerprint', $issues[0]['headers']);
+        $this->assertArrayNotHasKey('X-Facta-Request-Fingerprint', $issues[0]['headers']);
         $this->assertSame('factask_SIGN', $issues[0]['headers']['X-Facta-Sign-Key']);
     }
 
