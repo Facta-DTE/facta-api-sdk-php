@@ -91,6 +91,7 @@ object, and `new \stdClass()` is an empty object `{}`.
 | `createCustomer()` ... `deactivateProduct()` | same | Needs `catalog:write` and the company's «administrar desde el API» switch. `updateCustomer` / `updateProduct` accept `ifMatch` (the `revision` you read). |
 | `listCatalogChanges($since, $options)` | `GET /v1/catalog/changes?since=` | Ids and revisions of what changed; `catalog_cursor_expired` means read everything again. |
 | `createWebhook()` / `listWebhooks()` / `getWebhook()` / `updateWebhook()` / `deleteWebhook()` / `rotateWebhookSecret()` / `testWebhook()` | `/v1/webhooks...` | Scope `catalog:read`. The secret is shown once. |
+| `createDraft()` / `listDrafts()` / `getDraft()` / `getDraftByKey()` / `updateDraft()` / `cancelDraft()` / `issueDraft()` | `/v1/drafts...` | Scope `draft` (`issueDraft` also `issue` and the sign key). Leave an invoice for a person of the company to review and issue. See below. |
 | `Webhook::verify()` / `Webhook::constructEvent()` | none | Verifies `Facta-Signature` on your receiver (see below). |
 | `listHolding()` / `getContract()` | `/v1/dte/holding`, `/v1/openapi.json` | |
 
@@ -164,7 +165,36 @@ $event = Webhook::constructEvent($secret, $_SERVER['HTTP_FACTA_SIGNATURE'] ?? nu
 // timestamp (> 300 s) or a replayed deliveryId; answer 2xx for a repeated delivery, order by revision
 ```
 
-The retired sealed inbox (`/v1/catalog/changes` without `since`) answers `410 inbox_retired`.
+The retired sealed inbox (`POST /v1/catalog/changes` and `/v1/catalog/changes/{id}`) answers `410 inbox_retired`.
+
+#### Drafts
+
+A draft is an invoice your program leaves for a person of the company to review and issue in the Facta DTE app. No control number is spent until somebody issues it (or you do, with `issueDraft()`). Bodies and answers use the API's own member names.
+
+```php
+$draft = $facta->createDraft(
+    ['tipoDte' => '01', 'receptor' => ['customerId' => $customerId], 'items' => [['productId' => $productId, 'cantidad' => 1]], 'referencia' => 'order-77'],
+    ['idempotencyKey' => 'order-77']
+);                                                        // $draft['borradorId'], ['version'], ['totales']
+$page  = $facta->listDrafts(['state' => 'pendiente', 'reference' => 'order-77']);   // ['borradores', 'siguiente']
+$same  = $facta->getDraftByKey('order-77');               // draft -> invoice without the generation code
+$facta->updateDraft($draft['borradorId'], $draft['version'], $request);               // If-Match: version
+$issued = $facta->issueDraft($draft['borradorId'], $draft['version'], $request, ['idempotencyKey' => 'issue-77']);
+$facta->cancelDraft($draft['borradorId']);                // only while pending and closed
+```
+
+`drafts_not_ready` (409): the owner has not opened Facta with their vault since the company began sharing
+its data key; ask them to open it once and repeat. `version_mismatch`, `draft_claimed`, `draft_issuing`,
+`draft_issued`, `draft_not_issuable`, `item_final` (409) are about the draft's state and are never retried
+(`draft_issuing` / `draft_claimed` spent nothing).
+
+#### Production keys and companies still in test
+
+A production key (`facta_live_`) is refused with `environment_not_allowed` (403) on emission and on the
+company-level routes (customers, products, webhooks, the change feed, drafts, destinations, templates)
+while the company is still in the test environment; a test key is always allowed. A read-only key hears
+`forbidden_scope` before `catalog_encrypted`, and `details.hint` of `catalog_encrypted` says whether the key
+lacks access to the shared data or the catalogue is not shared.
 
 ### Options
 

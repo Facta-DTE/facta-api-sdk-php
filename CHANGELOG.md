@@ -27,7 +27,10 @@ SDK carries no copy of it. Follows the TypeScript SDK 0.6.0.
 
 - Error codes the server now returns: `catalog_revision_conflict`, `catalog_record_inactive`,
   `catalog_search_too_broad`, `catalog_cursor_expired`, `data_grant_unavailable`, `data_grant_revoked`,
-  `data_epoch_stale`, `inbox_retired`, `catalog_snapshot_retired` (constants on `FactaError`).
+  `data_epoch_stale`, `inbox_retired` (constants on `FactaError`).
+- **Drafts** (scope `draft`): `createDraft()`, `listDrafts()`, `getDraft()`, `getDraftByKey()`, `updateDraft()` (`version` sent as `If-Match`), `cancelDraft()` and `issueDraft()` (carries the sign key, answers like `issue()` plus `borradorId`). Constants for the draft codes (`DRAFTS_NOT_READY`, `VERSION_MISMATCH`, `DRAFT_CLAIMED`, `DRAFT_ISSUING`, `DRAFT_ISSUED`, `DRAFT_NOT_ISSUABLE`, `ITEM_FINAL`, `ID_CONFLICT`, `INBOX_CAP_REACHED`, `CONTENT_HASH_MISMATCH`, `CATALOG_WRITE_TEST_KEY`).
+- Every code the server can answer is a `FactaError` constant, including `MH_AUTH_FAILED` (424), `PAID_PLAN_REQUIRED` (402) and the Drive broker codes. `CATALOG_SNAPSHOT_RETIRED` is removed: the server never sent it.
+- `tests/ContractParityTest.php` pins the SDK to a snapshot of the staging contract (`tests/fixtures/openapi.yaml`): error codes both ways, the retry set (the TypeScript one) and every route wrapped or deliberately not wrapped.
 - `ifMatch` option on `updateCustomer()` / `updateProduct()`, and `revision` on single catalogue records
   read or written on a company that shares its data key (from `Facta-Catalog-Revision` / `ETag`).
 - `listCatalogChanges()` for `GET /v1/catalog/changes?since=`.

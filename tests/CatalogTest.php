@@ -153,7 +153,6 @@ final class CatalogTest extends ClientCase
             [422, 'catalog_search_too_broad'],
             [410, 'catalog_cursor_expired'],
             [410, 'inbox_retired'],
-            [410, 'catalog_snapshot_retired'],
         ] as [$status, $code]) {
             $fake = new FakeTransport([self::error($status, $code, 'm', '{"reason":"x"}')]);
             try {

@@ -65,6 +65,8 @@ final class Facta
     /** The routes that open the signing vault and therefore carry the second password. */
     private const SIGNING_PATHS = ['/v1/dte', '/v1/dte/sign'];
     private const SIGNING_EVENT_PATH = '#^/v1/dte/[^/?]+/(?:invalidate|return)$#';
+    /** Issuing a draft opens the signing vault like POST /v1/dte, so it carries the second password too. */
+    private const SIGNING_DRAFT_PATH = '#^/v1/drafts/[^/?]+/issue$#';
 
     /** @var string */
     private $apiKey;
@@ -1185,6 +1187,187 @@ final class Facta
         return $this->callArray('POST', $path, null, $this->options($options, ['idempotencyKey']));
     }
 
+    // --- Drafts (scope `draft`; issuing also needs `issue` and the signing key) ----------------------
+    //
+    // A draft is an invoice your program leaves for a person of the company to review and issue in the
+    // Facta DTE app. Facta validates it like an emission up to the point where a control number would be
+    // reserved (none is spent), seals it to the company's public draft key and keeps no plaintext. It
+    // expires after 30 days; a company holds at most 500. Bodies and answers use the API's own member
+    // names (`id`, `referencia`, `borradorId`, `estado`, `version`, ...).
+
+    /**
+     * Leaves an invoice as a draft. `$request` is the same array as {@see Facta::issue()} plus an optional
+     * `id` (your UUID v4) and `referencia` (up to 64 characters, no personal data). Repeating the call with
+     * the same `idempotencyKey` returns the same draft; another body under that key is
+     * `idempotency_key_reuse`. `drafts_not_ready` (409) means the owner has not opened Facta with their
+     * vault since the company began sharing its data key: ask them to open it once.
+     *
+     * @param array<string, mixed> $request
+     * @param array<string, mixed> $options `idempotencyKey`, `timeoutMs`, `headers`.
+     * @return array<string, mixed> `borradorId`, `estado`, `version`, `totales`.
+     * @throws FactaError
+     */
+    public function createDraft(array $request, array $options = []): array
+    {
+        $options = $this->options($options, ['idempotencyKey']);
+        return $this->draftOf($this->callArray('POST', '/v1/drafts', self::draftBody($request), $options));
+    }
+
+    /**
+     * The drafts this key left. Follow `siguiente` (pass it back as `cursor`) for more.
+     *
+     * @param array<string, mixed> $options `state` (pendiente, en_revision, emitiendo, emitido, descartado,
+     *        cancelado, vencido, aplicado, aplicado_parcial, rechazado), `reference` (your own), `limit`,
+     *        `cursor`, `include` ("contenido" adds each draft's resolved request when this key may open the
+     *        company data key, max 50 per page; "envelope" the legacy envelope).
+     * @return array<string, mixed> `borradores` (list), `siguiente` (string|null).
+     * @throws FactaError
+     */
+    public function listDrafts(array $options = []): array
+    {
+        $options = $this->options($options, ['state', 'reference', 'limit', 'cursor', 'include']);
+        $query = [];
+        foreach (['state' => 'estado', 'reference' => 'referencia', 'cursor' => 'cursor', 'include' => 'include'] as $name => $wire) {
+            if (isset($options[$name])) {
+                if (!is_string($options[$name]) || $options[$name] === '') {
+                    throw new \InvalidArgumentException($name . ' must be a non-empty string.');
+                }
+                $query[$wire] = $options[$name];
+            }
+        }
+        if (isset($options['limit'])) {
+            if (!is_int($options['limit']) || $options['limit'] < 1) {
+                throw new \InvalidArgumentException('limit must be a positive integer.');
+            }
+            $query['limite'] = (string) $options['limit'];
+        }
+        unset($options['state'], $options['reference'], $options['limit'], $options['cursor'], $options['include']);
+        $page = $this->callArray('GET', '/v1/drafts' . self::queryString($query), null, $options);
+        return [
+            'borradores' => isset($page['borradores']) && is_array($page['borradores']) ? array_values($page['borradores']) : [],
+            'siguiente' => isset($page['siguiente']) && is_string($page['siguiente']) ? $page['siguiente'] : null,
+        ];
+    }
+
+    /**
+     * One draft and, when it was issued, the document it became (`codigoGeneracion`, `numeroControl`,
+     * `estadoDocumento`, `selloRecibido`, `emitidoPor`, `editado`).
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function getDraft(string $draftId, array $options = []): array
+    {
+        $path = '/v1/drafts/' . rawurlencode(Catalog::requireId($draftId, 'draft'));
+        return $this->draftOf($this->callArray('GET', $path, null, $this->options($options, [])));
+    }
+
+    /**
+     * Follows draft to invoice without the generation code: reads a draft by the `idempotencyKey` it
+     * was created with.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function getDraftByKey(string $idempotencyKey, array $options = []): array
+    {
+        if ($idempotencyKey === '' || trim($idempotencyKey) === '' || strlen($idempotencyKey) > 200) {
+            throw new \InvalidArgumentException('The draft\'s idempotency key is required (up to 200 characters).');
+        }
+        $path = '/v1/drafts/by-key/' . rawurlencode($idempotencyKey);
+        return $this->draftOf($this->callArray('GET', $path, null, $this->options($options, [])));
+    }
+
+    /**
+     * Saves a new version of a draft that is still pending. `$version` is the one you read; it travels
+     * as `If-Match` (`version_mismatch`, 409, when stale). Refused while a person has the draft open in
+     * the app, while it is being issued, or once resolved.
+     *
+     * @param array<string, mixed> $request Same shape as {@see Facta::createDraft()}.
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function updateDraft(string $draftId, int $version, array $request, array $options = []): array
+    {
+        $id = Catalog::requireId($draftId, 'draft');
+        $options = $this->options($options, []);
+        $headers = isset($options['headers']) && is_array($options['headers']) ? $options['headers'] : [];
+        $headers['If-Match'] = (string) self::draftVersion($version);
+        $options['headers'] = $headers;
+        return $this->draftOf($this->callArray('PUT', '/v1/drafts/' . rawurlencode($id), self::draftBody($request), $options));
+    }
+
+    /**
+     * Cancels a draft that is still pending and closed.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function cancelDraft(string $draftId, array $options = []): array
+    {
+        $path = '/v1/drafts/' . rawurlencode(Catalog::requireId($draftId, 'draft'));
+        return $this->draftOf($this->callArray('DELETE', $path, null, $this->options($options, [])));
+    }
+
+    /**
+     * Issues a draft through the same road as {@see Facta::issue()}: needs the `issue` scope and the
+     * signing key, and spends a control number. `$version` is the draft's current version. One door
+     * prevents double issuing: `draft_issuing` or `draft_claimed` (409) spent nothing. A Hacienda
+     * rejection counts as issued and the draft is not reopened. The answer is the one of `issue` plus
+     * `borradorId`.
+     *
+     * @param array<string, mixed> $request Same array as {@see Facta::issue()}.
+     * @param array<string, mixed> $options Same as {@see Facta::issue()}: `idempotencyKey`, `deliver`, `timeoutMs`, `headers`.
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function issueDraft(string $draftId, int $version, array $request, array $options = []): array
+    {
+        $id = Catalog::requireId($draftId, 'draft');
+        $options = $this->options($options, ['idempotencyKey', 'deliver']);
+        $deliver = $options['deliver'] ?? null;
+        unset($options['deliver']);
+        $body = self::withDelivery($request, $deliver);
+        $body['version'] = self::draftVersion($version);
+        return $this->callArray('POST', '/v1/drafts/' . rawurlencode($id) . '/issue', $body, $options);
+    }
+
+    /**
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    private static function draftBody(array $request): array
+    {
+        if (isset($request['referencia']) && (!is_string($request['referencia']) || $request['referencia'] === '' || strlen($request['referencia']) > 64)) {
+            throw new \InvalidArgumentException('referencia must be a text of 1 to 64 characters.');
+        }
+        return $request;
+    }
+
+    private static function draftVersion(int $version): int
+    {
+        if ($version < 1) {
+            throw new \InvalidArgumentException('version must be the draft\'s version number read from the draft (for example 3).');
+        }
+        return $version;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function draftOf(array $payload): array
+    {
+        if (!isset($payload['borradorId']) || !is_string($payload['borradorId']) || !isset($payload['version']) || !is_int($payload['version'])) {
+            throw new FactaError(FactaError::INTERNAL_ERROR, 'The draft answer carries no id and version.', 502);
+        }
+        return $payload;
+    }
+
     /**
      * @param array<string, mixed> $input
      * @param string[]             $allowed
@@ -1513,7 +1696,11 @@ final class Facta
         // Sent ONLY where it is needed: a password that rides on every request ends up in every proxy log.
         if (
             $this->signKey !== null && $method === 'POST'
-            && (in_array($path, self::SIGNING_PATHS, true) || preg_match(self::SIGNING_EVENT_PATH, $path) === 1)
+            && (
+                in_array($path, self::SIGNING_PATHS, true)
+                || preg_match(self::SIGNING_EVENT_PATH, $path) === 1
+                || preg_match(self::SIGNING_DRAFT_PATH, $path) === 1
+            )
         ) {
             $headers['X-Facta-Sign-Key'] = $this->signKey;
         }
