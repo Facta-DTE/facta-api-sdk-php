@@ -28,4 +28,6 @@ Packagist reads Git tags, so `composer.json` has no `version` field. Never add o
    creates the GitHub Release with the ZIP and the changelog section.
 5. Packagist picks up the tag. Check https://packagist.org/packages/facta-dte/api.
 
+Release candidates use a hyphenated tag (`vX.Y.Z-rc.N`, with `Facta::VERSION` and the CHANGELOG heading to match); the workflow marks the GitHub Release as a pre-release and Composer treats it as unstable.
+
 Never move or delete a published tag. A mistake ships as the next patch version.

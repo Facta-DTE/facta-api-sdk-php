@@ -36,7 +36,7 @@ use Facta\Api\Support\Redactor;
  */
 final class Facta
 {
-    public const VERSION = '0.2.0';
+    public const VERSION = '0.2.0-rc.1';
 
     public const DEFAULT_BASE_URL = 'https://hcnvknpsbadplnfcflxx.supabase.co/functions/v1/api-v1';
 

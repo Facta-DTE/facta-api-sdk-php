@@ -6,7 +6,9 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.2.0] - proposed
+## [0.2.0-rc.1] - 2026-10-28
+
+**Release candidate.** Tagged as a pre-release: Composer's default `stable` stability and constraints such as `^0.1` do not select it. Install it explicitly with `composer require facta-dte/api:0.2.0-rc.1`. The stable release stays at 0.1.0 until the shared data key is in production. The notes below are the planned 0.2.0 notes.
 
 The shared data key: the server resolves catalogue ids and reads the catalogue in every mode, so the
 SDK carries no copy of it. Follows the TypeScript SDK 0.6.0.
