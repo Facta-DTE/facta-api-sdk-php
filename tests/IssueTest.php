@@ -12,12 +12,10 @@ use Facta\Api\Tests\Support\FakeTransport;
 final class IssueTest extends ClientCase
 {
     private const FE = ['tipoDte' => '01', 'items' => [['descripcion' => 'Facta API SDK integration test', 'cantidad' => 1, 'precioUni' => 0.01]]];
-    private const FE_FINGERPRINT = 'edd763e6eecb9d3ccbbac1e001b0eeef9839e91384d417c5727021193f362fdf';
-    private const FE_WITH_MAIL_FINGERPRINT = '9e5301d979f6a84e8b7fcb935c87b25ea5f4f2ae7d3c56192b7e30bb0a03430e';
 
     private const SEALED = '{"estado":"sellado","codigoGeneracion":"8F6A3B2C-1D4E-4F50-9A7B-0C1D2E3F4A5B","numeroControl":"DTE-01-M001P001-000000000000001","tipoDte":"01","ambiente":"00","archivoDte":"{\"a\":1}"}';
 
-    public function testIssuePostsTheBodyWithKeyFingerprintAndSignKey(): void
+    public function testIssuePostsTheBodyWithKeyAndSignKeyAndNoFingerprint(): void
     {
         $fake = new FakeTransport([self::ok(self::SEALED)]);
         $result = $this->client($fake, ['signKey' => self::SIGN_KEY])->issue(self::FE, ['idempotencyKey' => 'order-77']);
@@ -28,7 +26,7 @@ final class IssueTest extends ClientCase
         $this->assertSame('POST', $sent['method']);
         $this->assertSame('/v1/dte', self::path($fake));
         $this->assertSame('order-77', $sent['headers']['Idempotency-Key']);
-        $this->assertSame(self::FE_FINGERPRINT, $sent['headers']['X-Facta-Request-Fingerprint']);
+        $this->assertArrayNotHasKey('X-Facta-Request-Fingerprint', $sent['headers'], 'The SDK no longer rewrites the body, so the server hashes the body itself.');
         $this->assertSame(self::SIGN_KEY, $sent['headers']['X-Facta-Sign-Key']);
         $this->assertSame('application/json', $sent['headers']['Content-Type']);
         $this->assertSame(
@@ -50,7 +48,7 @@ final class IssueTest extends ClientCase
         $this->assertNotSame($first, $second);
     }
 
-    public function testARetryResendsTheSameBytesKeyAndFingerprint(): void
+    public function testARetryResendsTheSameBytesAndKey(): void
     {
         $fake = new FakeTransport([
             self::error(409, 'idempotency_in_flight'),
@@ -64,17 +62,15 @@ final class IssueTest extends ClientCase
         foreach ([1, 2] as $i) {
             $this->assertSame($fake->requests[0]['body'], $fake->requests[$i]['body']);
             $this->assertSame($fake->requests[0]['headers']['Idempotency-Key'], $fake->requests[$i]['headers']['Idempotency-Key']);
-            $this->assertSame(self::FE_FINGERPRINT, $fake->requests[$i]['headers']['X-Facta-Request-Fingerprint']);
         }
     }
 
-    public function testDeliverIsPartOfTheBodyAndOfTheFingerprint(): void
+    public function testDeliverIsPartOfTheBody(): void
     {
         $fake = new FakeTransport([self::ok(self::SEALED)]);
         $this->client($fake)->issue(self::FE, ['deliver' => ['email' => 'a@b.co']]);
 
         $this->assertSame(['correo' => 'a@b.co'], self::bodyOf($fake)['entrega']);
-        $this->assertSame(self::FE_WITH_MAIL_FINGERPRINT, self::request($fake)['headers']['X-Facta-Request-Fingerprint']);
         $this->assertStringEndsWith('"entrega":{"correo":"a@b.co"}}', (string) self::request($fake)['body']);
     }
 
@@ -101,7 +97,7 @@ final class IssueTest extends ClientCase
         $this->assertCount(1, $fake->requests, 'A bad deliver option must fail before any request.');
     }
 
-    public function testTheFingerprintOnlyTravelsOnTheTwoIssuingRoutes(): void
+    public function testNoRouteCarriesTheFingerprintHeader(): void
     {
         $fake = new FakeTransport([self::ok('{"estado":"preparado","documento":{},"prepareToken":"t"}'), self::ok(self::SEALED), self::ok('{}'), self::ok('{}')]);
         $client = $this->client($fake, ['signKey' => self::SIGN_KEY]);
@@ -110,9 +106,7 @@ final class IssueTest extends ClientCase
         $client->invalidate(self::CG, ['tipoAnulacion' => 2]);
         $client->registerReturn(self::CG, ['items' => [['linea' => 1, 'cantidad' => 1]]]);
 
-        $this->assertArrayHasKey('X-Facta-Request-Fingerprint', $fake->requests[0]['headers']);
-        $this->assertSame('/v1/dte/prepare', self::path($fake, 0));
-        foreach ([1, 2, 3] as $i) {
+        foreach ([0, 1, 2, 3] as $i) {
             $this->assertArrayNotHasKey('X-Facta-Request-Fingerprint', $fake->requests[$i]['headers'], self::path($fake, $i));
         }
     }
@@ -187,70 +181,38 @@ final class IssueTest extends ClientCase
         $client->sign(['documento' => new \stdClass()]);
     }
 
-    public function testReferencesToTheCatalogAreResolvedByTheServerWhenItIsReadable(): void
+    public function testReferencesToTheCatalogTravelUntouchedAndWithoutAStatusRead(): void
     {
         $request = ['tipoDte' => '01', 'receptor' => ['customerId' => 'c1'], 'items' => [['productId' => 'p1', 'cantidad' => 2]]];
-        $fake = new FakeTransport([self::statusWithCatalog('readable'), self::ok(self::SEALED), self::ok(self::SEALED)]);
+        $fake = new FakeTransport([self::ok(self::SEALED), self::ok(self::SEALED), self::ok('{"estado":"preparado","documento":{},"prepareToken":"t"}')]);
         $client = $this->client($fake);
         $client->issue($request);
         $client->issue($request);
+        $client->prepare($request);
 
-        $this->assertSame('/v1/status', self::path($fake, 0));
-        $this->assertSame('/v1/dte', self::path($fake, 1));
-        $this->assertSame('/v1/dte', self::path($fake, 2), 'The catalog mode is trusted for a minute: no second status call.');
-        $this->assertSame(
-            '{"tipoDte":"01","receptor":{"customerId":"c1"},"items":[{"productId":"p1","cantidad":2}]}',
-            self::request($fake, 1)['body'],
-            'The ids travel unresolved; the server resolves them.'
-        );
-        $this->assertSame('125f0e35672b58faaef7ccbfbc9d57ee0e1dcba6b3bc2aa9f80100451db8f08e', self::request($fake, 1)['headers']['X-Facta-Request-Fingerprint']);
+        $this->assertCount(3, $fake->requests, 'No /v1/status read: the server resolves the ids in every catalog mode.');
+        foreach ([0, 1] as $i) {
+            $this->assertSame('/v1/dte', self::path($fake, $i));
+            $this->assertSame(
+                '{"tipoDte":"01","receptor":{"customerId":"c1"},"items":[{"productId":"p1","cantidad":2}]}',
+                self::request($fake, $i)['body']
+            );
+        }
+        $this->assertSame('/v1/dte/prepare', self::path($fake, 2));
     }
 
-    /**
-     * @dataProvider unresolvableModes
-     */
-    public function testAnEncryptedCatalogNeedsALocalSnapshotThisVersionCannotBuild(?string $mode): void
+    public function testAnUnknownIdIsTheServersNotFoundNotALocalError(): void
     {
-        $request = ['tipoDte' => '01', 'items' => [['productId' => 'p1', 'cantidad' => 2]]];
-        $fake = new FakeTransport([self::statusWithCatalog($mode)]);
+        $fake = new FakeTransport([self::error(404, 'not_found', 'm', '{"reason":"catalog_unknown_id"}')]);
         try {
-            $this->client($fake)->issue($request);
+            $this->client($fake)->issue(['tipoDte' => '01', 'receptor' => ['customerId' => 'nope'], 'items' => []]);
             $this->fail('FactaError expected');
         } catch (FactaError $e) {
-            $this->assertSame(FactaError::UNAUTHORIZED, $e->getErrorCode());
-            $this->assertStringContainsString('later version', $e->getMessage());
+            $this->assertSame(FactaError::NOT_FOUND, $e->getErrorCode());
             $details = $e->getDetails();
-            $this->assertIsArray($details);
-            $this->assertSame('unlock_key_missing', $details['reason']);
+            $this->assertInstanceOf(\stdClass::class, $details);
+            $this->assertSame('catalog_unknown_id', $details->reason);
         }
-        $this->assertCount(1, $fake->requests, 'Nothing is issued when the references cannot be resolved.');
-    }
-
-    /** @return array<string, array{?string}> */
-    public function unresolvableModes(): array
-    {
-        return ['encrypted' => ['encrypted'], 'unknown' => [null]];
-    }
-
-    public function testTheErrorNamesTheMissingSnapshotNotTheMissingKeyWhenAnUnlockKeyIsSet(): void
-    {
-        $fake = new FakeTransport([self::statusWithCatalog('encrypted')]);
-        $client = $this->client($fake, ['unlockKey' => 'factauk_ABCDEF']);
-        try {
-            $client->issue(['tipoDte' => '01', 'receptor' => ['customerId' => 'c'], 'items' => []]);
-            $this->fail('FactaError expected');
-        } catch (FactaError $e) {
-            $details = $e->getDetails();
-            $this->assertIsArray($details);
-            $this->assertSame('local_snapshot_unsupported', $details['reason']);
-        }
-    }
-
-    public function testAFailingStatusAlsoMeansNoServerSideResolution(): void
-    {
-        $fake = new FakeTransport([self::error(500, 'internal_error')]);
-        $this->expectException(FactaError::class);
-        $this->client($fake)->issue(['tipoDte' => '01', 'receptor' => ['customerId' => 'c'], 'items' => []]);
     }
 
     public function testIssueErrorsKeepTheirCodeAndNeverLeakTheKeys(): void
@@ -346,6 +308,8 @@ final class IssueTest extends ClientCase
             'service_unavailable' => ['service_unavailable', 503],
             'correlative_unavailable' => ['correlative_unavailable', 503],
             'storage_unavailable' => ['storage_unavailable', 503],
+            'data_grant_unavailable' => ['data_grant_unavailable', 503],
+            'data_epoch_stale' => ['data_epoch_stale', 503],
         ];
     }
 

@@ -7,7 +7,8 @@ PHP client for the Facta DTE API (El Salvador electronic invoicing). Package
 **The reference behaviour is the TypeScript SDK** (`Facta-DTE/facta-api-sdk`:
 `src/client.ts`, `src/errors.ts`). When the two disagree, PHP follows TypeScript
 unless the plan says otherwise. Error `code` strings are identical. The HTTP
-contract is `openapi.yaml` in FactaDTE. Shared conformance vectors
+contract is `openapi.yaml` in FactaDTE. `tests/fixtures/openapi.yaml` is a snapshot of the staging contract (refresh it when the contract
+changes; `ContractParityTest` fails on any new code or route). Shared conformance vectors
 (`fingerprint-v1`, `envelopeDigest`) come from `facta-api-sdk/conformance/` and
 are copied to `tests/fixtures/`; never edit a copy by hand.
 
@@ -32,7 +33,7 @@ are copied to `tests/fixtures/`; never edit a copy by hand.
 - **A retry resends the same bytes.** Encode a body once per call and reuse the
   string; mint the `Idempotency-Key` once, outside the retry loop.
 - Retryable errors are exactly the TypeScript `RETRYABLE` set (`client.ts`): `idempotency_in_flight`,
-  `mh_unreachable`, `service_unavailable`, `correlative_unavailable`, `storage_unavailable` and
+  `mh_unreachable`, `service_unavailable`, `correlative_unavailable`, `storage_unavailable`, `data_grant_unavailable`, `data_epoch_stale` and
   `network_error` (transport failures). Safe because every attempt resends the same bytes with the
   same `Idempotency-Key`. Everything else is final.
 - Secrets never reach a message or `details` (`Support\Redactor`).

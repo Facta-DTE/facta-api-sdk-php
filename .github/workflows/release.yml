@@ -69,7 +69,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          # A tag with a hyphen (v0.2.0-rc.1) is a pre-release and never the "latest" release.
+          flags=""
+          case "$TAG" in *-*) flags="--prerelease" ;; esac
           gh release create "$TAG" "dist/facta-api-php-${TAG}.zip" \
             --title "facta-dte/api ${TAG}" \
             --notes-file release-notes.md \
-            --verify-tag
+            --verify-tag $flags

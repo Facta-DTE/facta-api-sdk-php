@@ -10,7 +10,7 @@ use Facta\Api\FactaError;
 /**
  * The live run against the staging API (environment 00), tier 1 of the PHP SDK. It mirrors
  * `scripts/live-integration.mjs` of the TypeScript SDK as far as an SDK without the unlock
- * key, the local archive and the catalog snapshot can go, and uses ONLY the SDK's public API.
+ * key, the local archive and BYOS destinations can go, and uses ONLY the SDK's public API.
  *
  * Nothing printed or reported here may carry API messages, document bytes, identifiers or
  * credentials: only fixed strings and error codes.
@@ -161,7 +161,7 @@ final class Run
         $storage = $facta->getStorageStatus();
         self::require($storage['managed']['ready'] === true, 'Full managed live validation requires ready managed storage.');
         $this->validateCatalogWriteGate();
-        $this->log('SKIP snapshots: the unlock key, the local archive and catalog snapshots are not in this SDK version');
+        $this->log('SKIP local storage: the unlock key, the local archive and BYOS destinations are not in this SDK version');
         $this->current = 'preflight';
         if (!$diagnostics['canIssue'] || !$diagnostics['canQuery'] || !$diagnostics['canDownload']) {
             throw new LiveError('permission_missing', 'Readiness checks blocked live issuance.');

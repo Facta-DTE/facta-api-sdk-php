@@ -15,13 +15,11 @@ final class CatalogTest extends ClientCase
     public function testAPlainCatalogIsReadThroughTheApiWithBothSpellings(): void
     {
         $fake = new FakeTransport([
-            self::statusWithCatalog('readable', true),
             self::ok(['clientes' => [self::CUSTOMER, ['id' => 'c2', 'nombre' => 'Off', 'activo' => false]], 'siguiente' => null]),
         ]);
         $rows = $this->client($fake)->listCustomers();
 
-        $this->assertSame('/v1/status', self::path($fake, 0));
-        $this->assertSame('/v1/customers?limite=200', self::path($fake, 1));
+        $this->assertSame('/v1/customers?limite=200', self::path($fake, 0));
         $this->assertCount(1, $rows, 'Deactivated customers are left out by default.');
         $this->assertSame('Ana', $rows[0]['nombre']);
         $this->assertSame('Ana', $rows[0]['name'], 'Every record carries both spellings.');
@@ -34,14 +32,13 @@ final class CatalogTest extends ClientCase
     public function testListFollowsTheCursorAndCanIncludeInactiveRecords(): void
     {
         $fake = new FakeTransport([
-            self::statusWithCatalog('plain'),
             self::ok(['productos' => [['id' => 'p1', 'descripcion' => 'A', 'tipoItem' => '1', 'precioUni' => '1.5']], 'siguiente' => 'next page']),
             self::ok(['productos' => [['id' => 'p2', 'descripcion' => 'B', 'activo' => false, 'tipoVenta' => 'exenta']], 'siguiente' => null]),
         ]);
         $rows = $this->client($fake)->listProducts(['includeInactive' => true]);
 
-        $this->assertSame('/v1/products?limite=200&incluirInactivos=true', self::path($fake, 1));
-        $this->assertSame('/v1/products?limite=200&incluirInactivos=true&cursor=next%20page', self::path($fake, 2));
+        $this->assertSame('/v1/products?limite=200&incluirInactivos=true', self::path($fake, 0));
+        $this->assertSame('/v1/products?limite=200&incluirInactivos=true&cursor=next%20page', self::path($fake, 1));
         $this->assertCount(2, $rows);
         $this->assertSame(1, $rows[0]['tipoItem'], 'Numeric strings become numbers.');
         $this->assertSame(1.5, $rows[0]['unit_price']);
@@ -54,7 +51,6 @@ final class CatalogTest extends ClientCase
     public function testGetByIdReturnsNullWhenMissingOrInactive(): void
     {
         $fake = new FakeTransport([
-            self::statusWithCatalog('plain'),
             self::ok(['cliente' => self::CUSTOMER]),
             self::error(404, 'not_found'),
             self::ok(['cliente' => ['id' => 'c3', 'nombre' => 'Off', 'activo' => false]]),
@@ -65,7 +61,7 @@ final class CatalogTest extends ClientCase
         $found = $client->getCustomer('c1');
         $this->assertNotNull($found);
         $this->assertSame('Ana', $found['name']);
-        $this->assertSame('/v1/customers/c1', self::path($fake, 1));
+        $this->assertSame('/v1/customers/c1', self::path($fake, 0));
         $this->assertNull($client->getCustomer('nope'));
         $this->assertNull($client->getCustomer('c3'));
         $inactive = $client->getCustomer('c3', ['includeInactive' => true]);
@@ -76,16 +72,15 @@ final class CatalogTest extends ClientCase
     public function testSearchUsesTheServerWithTheQueryAndTheLimit(): void
     {
         $fake = new FakeTransport([
-            self::statusWithCatalog('plain'),
             self::ok(['clientes' => [self::CUSTOMER]]),
             self::ok(['productos' => [['id' => 'p1', 'descripcion' => 'Café']]]),
         ]);
         $client = $this->client($fake);
 
         $this->assertCount(1, $client->searchCustomers('  ana ñ ', ['limit' => 5]));
-        $this->assertSame('/v1/customers?buscar=ana%20%C3%B1&limite=5', self::path($fake, 1));
+        $this->assertSame('/v1/customers?buscar=ana%20%C3%B1&limite=5', self::path($fake, 0));
         $products = $client->searchProducts('café');
-        $this->assertSame('/v1/products?buscar=caf%C3%A9&limite=50', self::path($fake, 2));
+        $this->assertSame('/v1/products?buscar=caf%C3%A9&limite=50', self::path($fake, 1));
         $this->assertSame('Café', $products[0]['description']);
     }
 
@@ -99,14 +94,13 @@ final class CatalogTest extends ClientCase
     public function testASearchAboveTheServerPageFollowsTheCursor(): void
     {
         $fake = new FakeTransport([
-            self::statusWithCatalog('plain'),
             self::ok(['clientes' => [self::CUSTOMER], 'siguiente' => 'k']),
             self::ok(['clientes' => [['id' => 'c9', 'nombre' => 'Ana 2']], 'siguiente' => null]),
         ]);
         $rows = $this->client($fake)->searchCustomers('ana', ['limit' => 300]);
         $this->assertCount(2, $rows);
-        $this->assertSame('/v1/customers?limite=200&buscar=ana', self::path($fake, 1));
-        $this->assertSame('/v1/customers?limite=200&buscar=ana&cursor=k', self::path($fake, 2));
+        $this->assertSame('/v1/customers?limite=200&buscar=ana', self::path($fake, 0));
+        $this->assertSame('/v1/customers?limite=200&buscar=ana&cursor=k', self::path($fake, 1));
     }
 
     public function testSearchLimitIsChecked(): void
@@ -123,19 +117,21 @@ final class CatalogTest extends ClientCase
     }
 
     /** @dataProvider catalogReads */
-    public function testAnEncryptedCatalogCannotBeReadYetAndSaysWhy(string $method): void
+    public function testEveryReadGoesStraightToTheApiWhateverTheCatalogMode(string $method): void
     {
-        $fake = new FakeTransport([self::statusWithCatalog('encrypted')]);
+        $fake = new FakeTransport([self::ok([
+            'clientes' => [], 'productos' => [], 'siguiente' => null,
+            'cliente' => self::CUSTOMER, 'producto' => ['id' => 'p1', 'descripcion' => 'A'],
+        ])]);
         $client = $this->client($fake);
+        $arguments = in_array($method, ['listCustomers', 'listProducts'], true) ? [] : ['x'];
         try {
-            $arguments = in_array($method, ['listCustomers', 'listProducts'], true) ? [] : ['x'];
             $client->{$method}(...$arguments);
-            $this->fail('FactaError expected');
         } catch (FactaError $e) {
-            $this->assertSame(FactaError::UNAUTHORIZED, $e->getErrorCode());
-            $this->assertStringContainsString('later version of this SDK', $e->getMessage());
+            $this->fail('No status call and no local snapshot: ' . $e->getMessage());
         }
-        $this->assertCount(1, $fake->requests, 'Only the status read; no catalog route is touched.');
+        $this->assertNotSame('/v1/status', self::path($fake, 0), 'Reads never ask /v1/status for a catalog mode.');
+        $this->assertCount(1, $fake->requests);
     }
 
     /** @return array<string, array{string}> */
@@ -148,24 +144,65 @@ final class CatalogTest extends ClientCase
         return $out;
     }
 
-    public function testAReadableCatalogWhoseRoutesAreMissingDoesNotPretendToHaveASnapshot(): void
+    public function testCatalogErrorsOfTheSharedKeyKeepTheirCodeStatusAndDetails(): void
     {
-        $fake = new FakeTransport([self::statusWithCatalog('readable'), self::error(404, 'not_found')]);
-        try {
-            $this->client($fake)->listCustomers();
-            $this->fail('FactaError expected');
-        } catch (FactaError $e) {
-            $this->assertSame(FactaError::NOT_FOUND, $e->getErrorCode(), 'Without an unlock key the original answer is the honest one.');
+        foreach ([
+            [503, 'data_grant_unavailable'],
+            [403, 'data_grant_revoked'],
+            [503, 'data_epoch_stale'],
+            [422, 'catalog_search_too_broad'],
+            [410, 'catalog_cursor_expired'],
+            [410, 'inbox_retired'],
+        ] as [$status, $code]) {
+            $fake = new FakeTransport([self::error($status, $code, 'm', '{"reason":"x"}')]);
+            try {
+                $this->client($fake, ['maxRetries' => 0])->listCustomers();
+                $this->fail('FactaError expected for ' . $code);
+            } catch (FactaError $e) {
+                $this->assertSame($code, $e->getErrorCode());
+                $this->assertSame($status, $e->getStatus());
+            }
         }
+    }
 
-        $fake = new FakeTransport([self::statusWithCatalog('readable'), self::error(409, 'catalog_encrypted')]);
+    public function testASingleRecordCarriesTheRevisionOfTheSharedCatalogue(): void
+    {
+        $fake = new FakeTransport([
+            new \Facta\Api\Http\Response(200, ['Content-Type' => 'application/json', 'ETag' => '"7"', 'Facta-Catalog-Revision' => '7'], (string) json_encode(['cliente' => self::CUSTOMER])),
+            self::ok(['cliente' => self::CUSTOMER]),
+        ]);
+        $client = $this->client($fake);
+        $withRevision = $client->getCustomer('c1');
+        $this->assertNotNull($withRevision);
+        $this->assertSame(7, $withRevision['revision']);
+        $plain = $client->getCustomer('c1');
+        $this->assertNotNull($plain);
+        $this->assertArrayNotHasKey('revision', $plain, 'A catalogue with no revision reports none.');
+    }
+
+    public function testIfMatchTravelsOnAnEditAndAConflictKeepsItsDetails(): void
+    {
+        $fake = new FakeTransport([
+            new \Facta\Api\Http\Response(200, ['Content-Type' => 'application/json', 'ETag' => '"8"'], (string) json_encode(['cliente' => self::CUSTOMER])),
+            self::error(409, 'catalog_revision_conflict', 'm', '{"revisionActual":9}'),
+        ]);
+        $client = $this->client($fake);
+        $updated = $client->updateCustomer('c1', ['telefono' => '22223333'], ['ifMatch' => 7]);
+        $this->assertSame('"7"', self::request($fake, 0)['headers']['If-Match']);
+        $this->assertSame(8, $updated['revision']);
         try {
-            $this->client($fake, ['unlockKey' => 'factauk_ABC'])->listCustomers();
+            $client->updateCustomer('c1', ['telefono' => '22224444'], ['ifMatch' => '"7"']);
             $this->fail('FactaError expected');
         } catch (FactaError $e) {
-            $this->assertSame(FactaError::UNAUTHORIZED, $e->getErrorCode());
-            $this->assertStringContainsString('later version', $e->getMessage());
+            $this->assertSame(FactaError::CATALOG_REVISION_CONFLICT, $e->getErrorCode());
+            $this->assertSame(409, $e->getStatus());
+            $details = $e->getDetails();
+            $this->assertInstanceOf(\stdClass::class, $details);
+            $this->assertSame(9, $details->revisionActual);
         }
+        $this->assertSame('"7"', self::request($fake, 1)['headers']['If-Match']);
+        $this->expectException(\InvalidArgumentException::class);
+        $client->updateCustomer('c1', ['telefono' => '22225555'], ['ifMatch' => 'seven']);
     }
 
     public function testCreateCustomerSendsWireNamesDigitsOnlyAndAnIdempotencyKey(): void

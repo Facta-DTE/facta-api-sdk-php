@@ -8,7 +8,7 @@ namespace Facta\Api\Support;
  * Readiness checks over the public `/v1/status` contract. This never opens a
  * vault and never reserves anything. It is the HTTP-only half of `diagnose()`
  * of the TypeScript SDK (`src/diagnostics.ts`); the checks that need local
- * storage (an archive, an encrypted catalog snapshot) report that they are not
+ * storage (the restart-safe archive) report that they are not
  * available in this SDK version.
  *
  * @internal
@@ -149,21 +149,6 @@ final class Diagnostics
         $destinationsOk = $managedStorageReady || $legacy
             || self::revision($add, 'destinations-sync', $syncMap['destinations'] ?? null, 'Storage destinations');
 
-        $catalog = $syncMap['catalog'] ?? null;
-        $catalogStatus = is_array($catalog) ? ($catalog['status'] ?? null) : null;
-        if (
-            $catalogStatus === 'ready' && isset($catalog['desiredRevision']) && is_int($catalog['desiredRevision'])
-            && ($catalog['publishedRevision'] ?? null) === $catalog['desiredRevision']
-        ) {
-            $add('catalog-sync', 'ok', 'Catalog is synchronized for customerId/productId references.');
-        } elseif ($catalogStatus === 'pending' || $catalogStatus === 'error') {
-            $add('catalog-sync', 'warning', 'Catalog is out of date; use inline data until synchronization completes.');
-        } elseif ($catalogStatus === 'legacy' || !is_array($catalog)) {
-            $add('catalog-sync', 'warning', 'A current catalog snapshot was not confirmed; inline data is still available.');
-        } else {
-            $add('catalog-sync', 'warning', 'Could not confirm the published catalog revision.');
-        }
-
         $add('archive-pending', 'unknown', 'The local archive is not available in this SDK version yet, so pending operations cannot be inspected.');
         $add('archive', 'unknown', 'The local archive (which needs the unlock key) is not available in this SDK version yet.');
 
@@ -204,7 +189,7 @@ final class Diagnostics
             'canIssueAndArchive' => false,
             'pendingArchiveOperations' => null,
             'revisions' => is_array($sync)
-                ? ['sign' => $syncMap['sign'] ?? null, 'destinations' => $syncMap['destinations'] ?? null, 'catalog' => $syncMap['catalog'] ?? null]
+                ? ['sign' => $syncMap['sign'] ?? null, 'destinations' => $syncMap['destinations'] ?? null]
                 : null,
             'checks' => $checks,
         ];

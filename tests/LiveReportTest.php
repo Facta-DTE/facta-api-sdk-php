@@ -28,7 +28,7 @@ final class LiveReportTest extends TestCase
     public function testStepsThisVersionCannotRunAreListedAsSuch(): void
     {
         $text = Report::render(Report::createResults());
-        foreach (['Encrypted catalog snapshot opened locally', 'Encrypted destination snapshot opened locally', 'Encrypted local archive', 'Completed operation journal', 'Encrypted journal restart and recovery'] as $label) {
+        foreach (['Encrypted destination snapshot opened locally', 'Encrypted local archive', 'Completed operation journal', 'Encrypted journal restart and recovery'] as $label) {
             $this->assertStringContainsString('| ' . $label . ' | Not in this SDK version |', $text);
         }
     }

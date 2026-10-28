@@ -8,7 +8,6 @@ use Facta\Api\Http\Response;
 use Facta\Api\Http\Transport;
 use Facta\Api\Http\TransportException;
 use Facta\Api\Http\TransportFactory;
-use Facta\Api\Json\Fingerprint;
 use Facta\Api\Json\Json;
 use Facta\Api\Support\Catalog;
 use Facta\Api\Support\Delivery;
@@ -37,7 +36,7 @@ use Facta\Api\Support\Redactor;
  */
 final class Facta
 {
-    public const VERSION = '0.1.0';
+    public const VERSION = '0.2.0-rc.1';
 
     public const DEFAULT_BASE_URL = 'https://hcnvknpsbadplnfcflxx.supabase.co/functions/v1/api-v1';
 
@@ -45,12 +44,6 @@ final class Facta
     private const REGION_PATTERN = '/^[a-z]{2}(?:-[a-z]+)+-\d+$/';
     private const MAX_RETRY_AFTER_MS = 60000;
     private const SERVER_CATALOG_PAGE = 200;
-    private const CATALOG_MODE_TTL_SECONDS = 60;
-
-    /** Header carrying fingerprint-v1 (see conformance/fingerprint-v1.md). */
-    private const FINGERPRINT_HEADER = 'X-Facta-Request-Fingerprint';
-    /** The only routes whose idempotency claim may be hashed by fingerprint. */
-    private const FINGERPRINT_PATHS = ['/v1/dte', '/v1/dte/prepare'];
 
     private const OPTION_KEYS = [
         'apiKey', 'signKey', 'unlockKey', 'baseUrl', 'timeoutMs', 'maxRetries',
@@ -64,12 +57,16 @@ final class Facta
         FactaError::SERVICE_UNAVAILABLE,
         FactaError::CORRELATIVE_UNAVAILABLE,
         FactaError::STORAGE_UNAVAILABLE,
+        FactaError::DATA_GRANT_UNAVAILABLE,
+        FactaError::DATA_EPOCH_STALE,
         FactaError::NETWORK_ERROR,
     ];
 
     /** The routes that open the signing vault and therefore carry the second password. */
     private const SIGNING_PATHS = ['/v1/dte', '/v1/dte/sign'];
     private const SIGNING_EVENT_PATH = '#^/v1/dte/[^/?]+/(?:invalidate|return)$#';
+    /** Issuing a draft opens the signing vault like POST /v1/dte, so it carries the second password too. */
+    private const SIGNING_DRAFT_PATH = '#^/v1/drafts/[^/?]+/issue$#';
 
     /** @var string */
     private $apiKey;
@@ -93,8 +90,8 @@ final class Facta
     private $secrets;
     /** @var string|null */
     private $servedRegion = null;
-    /** @var array{mode: string|null, at: int}|null */
-    private $catalogModeCache = null;
+    /** @var array<string, string>|null Response headers of the last successful call (single-threaded read-back). */
+    private $lastHeaders = null;
 
     /**
      * @param array<string, mixed> $options
@@ -241,9 +238,8 @@ final class Facta
      * Actionable readiness checks over `/v1/status` and the storage capability.
      * It reads, and never opens a vault or reserves a correlative.
      *
-     * Checks that need local storage (the archive, an encrypted catalog
-     * snapshot) are reported as `unknown` with "not available in this SDK
-     * version yet"; `canIssueAndArchive` is therefore always false.
+     * Checks that need local storage (the restart-safe archive) are reported as `unknown`
+     * with "not available in this SDK version yet"; `canIssueAndArchive` is therefore always false.
      *
      * @param array<string, mixed> $options `expectedEnvironment` ("00"|"01"), `requiredScopes` (string[]),
      *                                      `dteType` (e.g. "01").
@@ -266,7 +262,6 @@ final class Facta
                 'canIssueAndArchive' => false,
                 'pendingArchiveOperations' => null,
                 'revisions' => null,
-                'catalogMode' => $this->catalogModeCache !== null ? $this->catalogModeCache['mode'] : null,
                 'servedRegion' => $this->servedRegion,
                 'checks' => [[
                     'id' => 'api',
@@ -321,7 +316,8 @@ final class Facta
             }
         }
         $report['storageReady'] = $storageReady;
-        $report['catalogMode'] = $this->rememberCatalogMode($status);
+        $key = isset($status['llave']) && is_array($status['llave']) ? $status['llave'] : [];
+        $report['catalogMode'] = isset($key['catalogMode']) && is_string($key['catalogMode']) ? $key['catalogMode'] : null;
         $report['region'] = $this->region;
         $report['servedRegion'] = $this->servedRegion;
         return $report;
@@ -344,8 +340,9 @@ final class Facta
      *    {@see Facta::deliverEmail()} / {@see Facta::deliverWhatsApp()}.
      *  - `timeoutMs` int, `headers` array.
      *
-     * The request travels with `X-Facta-Request-Fingerprint` (fingerprint-v1 of the request as you
-     * wrote it, `entrega` included), so a retry survives a catalog edit between attempt and retry.
+     * `receptor.customerId` and `items[].productId` travel untouched: the server resolves them from the
+     * company catalog in every catalog mode (an unknown id is `not_found`, `details.reason`
+     * `catalog_unknown_id`). A retry resends the same bytes and the same `Idempotency-Key`.
      *
      * @param array<string, mixed> $request
      * @param array<string, mixed> $options
@@ -361,12 +358,7 @@ final class Facta
         $deliver = $options['deliver'] ?? null;
         unset($options['deliver']);
 
-        // Taken before catalog resolution, so a catalog change between an attempt and its retry
-        // cannot change what the server's idempotency claim compares.
-        $asWritten = self::withDelivery($request, $deliver);
-        $options['fingerprint'] = Fingerprint::v1(Json::encode($asWritten));
-        $resolved = self::withDelivery($this->resolveCatalogRefs($request), $deliver);
-        return $this->callArray('POST', '/v1/dte', $resolved, $options);
+        return $this->callArray('POST', '/v1/dte', self::withDelivery($request, $deliver), $options);
     }
 
     /**
@@ -387,9 +379,7 @@ final class Facta
     public function prepare(array $request, array $options = []): array
     {
         $options = $this->options($options, ['idempotencyKey', 'headers', 'timeoutMs']);
-        $options['fingerprint'] = Fingerprint::v1(Json::encode($request));
-        $resolved = $this->resolveCatalogRefs($request);
-        $raw = $this->execute('POST', '/v1/dte/prepare', $resolved, $options, false);
+        $raw = $this->execute('POST', '/v1/dte/prepare', $request, $options, false);
         if (!($raw instanceof \stdClass)) {
             throw new FactaError(FactaError::INTERNAL_ERROR, 'API response was not a JSON object.', 200);
         }
@@ -860,10 +850,10 @@ final class Facta
 
     // --- Catalog ------------------------------------------------------------------------------
     //
-    // Reads follow the catalog mode the key reports in `/v1/status`: "plain" and "readable" are read
-    // through the API. An "encrypted" catalog is read from the key's decrypted snapshot, which needs
-    // the unlock key and local decryption; local snapshots arrive in a later version of this SDK, so
-    // those reads throw FactaError `unauthorized` (details.reason) until then.
+    // Every read goes straight to the API. The server reads the catalogue in every mode (plain,
+    // readable, or encrypted at rest and shared with this key), so no `unlockKey` is needed and the
+    // SDK keeps no local copy. `customerId` / `productId` in a document request are resolved by the
+    // server the same way.
 
     /**
      * Lists customers (deactivated ones only with `includeInactive`).
@@ -876,10 +866,8 @@ final class Facta
     {
         $options = $this->options($options, ['includeInactive']);
         $all = $options['includeInactive'] ?? false;
-        return $this->catalogRead(function () use ($all): array {
-            $rows = $this->listAll('/v1/customers', ['clientes'], $all === true ? ['incluirInactivos' => 'true'] : []);
-            return self::onlyActive($rows, $all === true);
-        });
+        $rows = $this->listAll('/v1/customers', ['clientes'], $all === true ? ['incluirInactivos' => 'true'] : []);
+        return self::onlyActive($rows, $all === true);
     }
 
     /**
@@ -893,10 +881,8 @@ final class Facta
     {
         $options = $this->options($options, ['includeInactive']);
         $id = Catalog::requireId($customerId, 'customer');
-        return $this->catalogRead(function () use ($id, $options): ?array {
-            $row = $this->getOne('/v1/customers/' . rawurlencode($id), ['cliente']);
-            return $row === null || ($row['active'] === false && ($options['includeInactive'] ?? false) !== true) ? null : $row;
-        });
+        $row = $this->getOne('/v1/customers/' . rawurlencode($id), ['cliente']);
+        return $row === null || ($row['active'] === false && ($options['includeInactive'] ?? false) !== true) ? null : $row;
     }
 
     /**
@@ -922,10 +908,8 @@ final class Facta
     {
         $options = $this->options($options, ['includeInactive']);
         $all = $options['includeInactive'] ?? false;
-        return $this->catalogRead(function () use ($all): array {
-            $rows = $this->listAll('/v1/products', ['productos'], $all === true ? ['incluirInactivos' => 'true'] : []);
-            return self::onlyActive($rows, $all === true);
-        });
+        $rows = $this->listAll('/v1/products', ['productos'], $all === true ? ['incluirInactivos' => 'true'] : []);
+        return self::onlyActive($rows, $all === true);
     }
 
     /**
@@ -939,10 +923,8 @@ final class Facta
     {
         $options = $this->options($options, ['includeInactive']);
         $id = Catalog::requireId($productId, 'product');
-        return $this->catalogRead(function () use ($id, $options): ?array {
-            $row = $this->getOne('/v1/products/' . rawurlencode($id), ['producto']);
-            return $row === null || ($row['active'] === false && ($options['includeInactive'] ?? false) !== true) ? null : $row;
-        });
+        $row = $this->getOne('/v1/products/' . rawurlencode($id), ['producto']);
+        return $row === null || ($row['active'] === false && ($options['includeInactive'] ?? false) !== true) ? null : $row;
     }
 
     /**
@@ -978,8 +960,13 @@ final class Facta
     /**
      * Changes fields of a customer; only the fields you pass change.
      *
+     * On a company that shares its data key, pass `ifMatch` (the `revision` you read) to apply the
+     * edit only when that is still the current revision; otherwise the server answers
+     * `catalog_revision_conflict` and `details.revisionActual` carries the current one. Without it
+     * the last write wins per field sent.
+     *
      * @param array<string, mixed> $changes
-     * @param array<string, mixed> $options `idempotencyKey`.
+     * @param array<string, mixed> $options `idempotencyKey`, `ifMatch` (int|string).
      * @return array<string, mixed>
      * @throws FactaError
      */
@@ -991,7 +978,7 @@ final class Facta
             '/v1/customers/' . rawurlencode($id),
             ['cliente'],
             Catalog::prepareCustomer($changes, 'update'),
-            $this->options($options, ['idempotencyKey']),
+            $this->withIfMatch($this->options($options, ['idempotencyKey', 'ifMatch'])),
             $id
         );
     }
@@ -1028,8 +1015,10 @@ final class Facta
     /**
      * Changes fields of a product; only the fields you pass change.
      *
+     * `ifMatch` works as in {@see Facta::updateCustomer()}.
+     *
      * @param array<string, mixed> $changes
-     * @param array<string, mixed> $options `idempotencyKey`.
+     * @param array<string, mixed> $options `idempotencyKey`, `ifMatch` (int|string).
      * @return array<string, mixed>
      * @throws FactaError
      */
@@ -1041,7 +1030,7 @@ final class Facta
             '/v1/products/' . rawurlencode($id),
             ['producto'],
             Catalog::prepareProduct($changes, 'update'),
-            $this->options($options, ['idempotencyKey']),
+            $this->withIfMatch($this->options($options, ['idempotencyKey', 'ifMatch'])),
             $id
         );
     }
@@ -1059,6 +1048,364 @@ final class Facta
         return $this->catalogWrite('DELETE', '/v1/products/' . rawurlencode($id), ['producto'], null, $this->options($options, ['idempotencyKey']), $id);
     }
 
+    // --- Catalogue changes and webhooks (shared data key) -------------------------------------
+    //
+    // Ids and revisions only, never the content: read the record with getCustomer() / getProduct().
+    // Scope `catalog:read` (or `catalog:write`).
+
+    /**
+     * What changed in the company catalogue since a revision (`GET /v1/catalog/changes?since=`):
+     * ids, revision, operation and actor, in revision order. Start with `$since = 0`, apply the
+     * page, and continue with `siguiente` while `hayMas` is true. Send back the `generacion` you
+     * received, so a restore is not mistaken for a long history.
+     *
+     * A cursor the server can no longer continue from is `FactaError` `catalog_cursor_expired`
+     * (HTTP 410, `details.reason`, with the current `cabeza` and `generacion`): read everything
+     * again and continue from there.
+     *
+     * @param array<string, mixed> $options `generation` (UUID from a previous page), `limit` (1-1000, default 200).
+     * @return array<string, mixed> `generacion`, `cabeza`, `cambios` (list), `siguiente` (int), `hayMas` (bool).
+     * @throws FactaError
+     */
+    public function listCatalogChanges(int $since = 0, array $options = []): array
+    {
+        $options = $this->options($options, ['generation', 'limit']);
+        if ($since < 0) {
+            throw new \InvalidArgumentException('since must be a non-negative integer.');
+        }
+        $query = ['since' => (string) $since];
+        if (isset($options['generation'])) {
+            if (!is_string($options['generation']) || preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $options['generation']) !== 1) {
+                throw new \InvalidArgumentException('generation must be the UUID returned as `generacion`.');
+            }
+            $query['generacion'] = $options['generation'];
+        }
+        if (isset($options['limit'])) {
+            if (!is_int($options['limit']) || $options['limit'] < 1 || $options['limit'] > 1000) {
+                throw new \InvalidArgumentException('limit must be an integer from 1 to 1000.');
+            }
+            $query['limite'] = (string) $options['limit'];
+        }
+        $page = $this->callArray('GET', '/v1/catalog/changes' . self::queryString($query), null, $this->callOptions($options));
+        if (!isset($page['cambios']) || !is_array($page['cambios']) || !isset($page['siguiente']) || !is_int($page['siguiente'])) {
+            throw new FactaError(FactaError::INTERNAL_ERROR, 'The catalogue changes answer is malformed.', 502);
+        }
+        return $page;
+    }
+
+    /**
+     * Registers a webhook for catalogue changes (at most 5 per key). The answer carries `secreto`
+     * ONCE: keep it, and verify every delivery with {@see \Facta\Api\Webhook::verify()}.
+     * The URL must be https on port 443 and public.
+     *
+     * @param array<string, mixed> $input   `url` (required), `eventos` (string[], empty = all), `descripcion`.
+     * @param array<string, mixed> $options
+     * @return array<string, mixed> `id`, `url`, `eventos`, `activo`, `secreto`, ...
+     * @throws FactaError
+     */
+    public function createWebhook(array $input, array $options = []): array
+    {
+        $body = self::webhookBody($input, ['url', 'eventos', 'descripcion'], true);
+        return $this->callArray('POST', '/v1/webhooks', $body, $this->options($options, ['idempotencyKey']));
+    }
+
+    /**
+     * The webhooks of this key (never with the secret).
+     *
+     * @param array<string, mixed> $options
+     * @return array<int, array<string, mixed>>
+     * @throws FactaError
+     */
+    public function listWebhooks(array $options = []): array
+    {
+        $payload = $this->callArray('GET', '/v1/webhooks', null, $this->options($options, []));
+        return isset($payload['webhooks']) && is_array($payload['webhooks']) ? array_values($payload['webhooks']) : [];
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function getWebhook(string $webhookId, array $options = []): array
+    {
+        return $this->callArray('GET', '/v1/webhooks/' . rawurlencode(Catalog::requireId($webhookId, 'webhook')), null, $this->options($options, []));
+    }
+
+    /**
+     * Changes the URL, the events, the description, or switches the webhook on and off
+     * (`['activo' => true]` also clears the failure count after Facta switched it off).
+     *
+     * @param array<string, mixed> $changes `url`, `eventos`, `descripcion` (null clears), `activo`.
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function updateWebhook(string $webhookId, array $changes, array $options = []): array
+    {
+        $id = Catalog::requireId($webhookId, 'webhook');
+        $body = self::webhookBody($changes, ['url', 'eventos', 'descripcion', 'activo'], false);
+        return $this->callArray('PATCH', '/v1/webhooks/' . rawurlencode($id), $body, $this->options($options, []));
+    }
+
+    /**
+     * Deletes a webhook, its secret and whatever it had queued.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed> `id`, `eliminado`.
+     * @throws FactaError
+     */
+    public function deleteWebhook(string $webhookId, array $options = []): array
+    {
+        return $this->callArray('DELETE', '/v1/webhooks/' . rawurlencode(Catalog::requireId($webhookId, 'webhook')), null, $this->options($options, []));
+    }
+
+    /**
+     * Replaces the signing secret. The old one stops working at once; the new one (`secreto`) is shown once.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function rotateWebhookSecret(string $webhookId, array $options = []): array
+    {
+        $path = '/v1/webhooks/' . rawurlencode(Catalog::requireId($webhookId, 'webhook')) . '/rotate-secret';
+        return $this->callArray('POST', $path, null, $this->options($options, ['idempotencyKey']));
+    }
+
+    /**
+     * Queues a `webhook.test` delivery (same body, same signature) so you can check your receiver
+     * without touching the catalogue. It leaves within the next minute.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed> `entregaId`, `evento`.
+     * @throws FactaError
+     */
+    public function testWebhook(string $webhookId, array $options = []): array
+    {
+        $path = '/v1/webhooks/' . rawurlencode(Catalog::requireId($webhookId, 'webhook')) . '/test';
+        return $this->callArray('POST', $path, null, $this->options($options, ['idempotencyKey']));
+    }
+
+    // --- Drafts (scope `draft`; issuing also needs `issue` and the signing key) ----------------------
+    //
+    // A draft is an invoice your program leaves for a person of the company to review and issue in the
+    // Facta DTE app. Facta validates it like an emission up to the point where a control number would be
+    // reserved (none is spent), seals it to the company's public draft key and keeps no plaintext. It
+    // expires after 30 days; a company holds at most 500. Bodies and answers use the API's own member
+    // names (`id`, `referencia`, `borradorId`, `estado`, `version`, ...).
+
+    /**
+     * Leaves an invoice as a draft. `$request` is the same array as {@see Facta::issue()} plus an optional
+     * `id` (your UUID v4) and `referencia` (up to 64 characters, no personal data). Repeating the call with
+     * the same `idempotencyKey` returns the same draft; another body under that key is
+     * `idempotency_key_reuse`. `drafts_not_ready` (409) means the owner has not opened Facta with their
+     * vault since the company began sharing its data key: ask them to open it once.
+     *
+     * @param array<string, mixed> $request
+     * @param array<string, mixed> $options `idempotencyKey`, `timeoutMs`, `headers`.
+     * @return array<string, mixed> `borradorId`, `estado`, `version`, `totales`.
+     * @throws FactaError
+     */
+    public function createDraft(array $request, array $options = []): array
+    {
+        $options = $this->options($options, ['idempotencyKey']);
+        return $this->draftOf($this->callArray('POST', '/v1/drafts', self::draftBody($request), $options));
+    }
+
+    /**
+     * The drafts this key left. Follow `siguiente` (pass it back as `cursor`) for more.
+     *
+     * @param array<string, mixed> $options `state` (pendiente, en_revision, emitiendo, emitido, descartado,
+     *        cancelado, vencido, aplicado, aplicado_parcial, rechazado), `reference` (your own), `limit`,
+     *        `cursor`, `include` ("contenido" adds each draft's resolved request when this key may open the
+     *        company data key, max 50 per page; "envelope" the legacy envelope).
+     * @return array<string, mixed> `borradores` (list), `siguiente` (string|null).
+     * @throws FactaError
+     */
+    public function listDrafts(array $options = []): array
+    {
+        $options = $this->options($options, ['state', 'reference', 'limit', 'cursor', 'include']);
+        $query = [];
+        foreach (['state' => 'estado', 'reference' => 'referencia', 'cursor' => 'cursor', 'include' => 'include'] as $name => $wire) {
+            if (isset($options[$name])) {
+                if (!is_string($options[$name]) || $options[$name] === '') {
+                    throw new \InvalidArgumentException($name . ' must be a non-empty string.');
+                }
+                $query[$wire] = $options[$name];
+            }
+        }
+        if (isset($options['limit'])) {
+            if (!is_int($options['limit']) || $options['limit'] < 1) {
+                throw new \InvalidArgumentException('limit must be a positive integer.');
+            }
+            $query['limite'] = (string) $options['limit'];
+        }
+        unset($options['state'], $options['reference'], $options['limit'], $options['cursor'], $options['include']);
+        $page = $this->callArray('GET', '/v1/drafts' . self::queryString($query), null, $options);
+        return [
+            'borradores' => isset($page['borradores']) && is_array($page['borradores']) ? array_values($page['borradores']) : [],
+            'siguiente' => isset($page['siguiente']) && is_string($page['siguiente']) ? $page['siguiente'] : null,
+        ];
+    }
+
+    /**
+     * One draft and, when it was issued, the document it became (`codigoGeneracion`, `numeroControl`,
+     * `estadoDocumento`, `selloRecibido`, `emitidoPor`, `editado`).
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function getDraft(string $draftId, array $options = []): array
+    {
+        $path = '/v1/drafts/' . rawurlencode(Catalog::requireId($draftId, 'draft'));
+        return $this->draftOf($this->callArray('GET', $path, null, $this->options($options, [])));
+    }
+
+    /**
+     * Follows draft to invoice without the generation code: reads a draft by the `idempotencyKey` it
+     * was created with.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function getDraftByKey(string $idempotencyKey, array $options = []): array
+    {
+        if ($idempotencyKey === '' || trim($idempotencyKey) === '' || strlen($idempotencyKey) > 200) {
+            throw new \InvalidArgumentException('The draft\'s idempotency key is required (up to 200 characters).');
+        }
+        $path = '/v1/drafts/by-key/' . rawurlencode($idempotencyKey);
+        return $this->draftOf($this->callArray('GET', $path, null, $this->options($options, [])));
+    }
+
+    /**
+     * Saves a new version of a draft that is still pending. `$version` is the one you read; it travels
+     * as `If-Match` (`version_mismatch`, 409, when stale). Refused while a person has the draft open in
+     * the app, while it is being issued, or once resolved.
+     *
+     * @param array<string, mixed> $request Same shape as {@see Facta::createDraft()}.
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function updateDraft(string $draftId, int $version, array $request, array $options = []): array
+    {
+        $id = Catalog::requireId($draftId, 'draft');
+        $options = $this->options($options, []);
+        $headers = isset($options['headers']) && is_array($options['headers']) ? $options['headers'] : [];
+        $headers['If-Match'] = (string) self::draftVersion($version);
+        $options['headers'] = $headers;
+        return $this->draftOf($this->callArray('PUT', '/v1/drafts/' . rawurlencode($id), self::draftBody($request), $options));
+    }
+
+    /**
+     * Cancels a draft that is still pending and closed.
+     *
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function cancelDraft(string $draftId, array $options = []): array
+    {
+        $path = '/v1/drafts/' . rawurlencode(Catalog::requireId($draftId, 'draft'));
+        return $this->draftOf($this->callArray('DELETE', $path, null, $this->options($options, [])));
+    }
+
+    /**
+     * Issues a draft through the same road as {@see Facta::issue()}: needs the `issue` scope and the
+     * signing key, and spends a control number. `$version` is the draft's current version. One door
+     * prevents double issuing: `draft_issuing` or `draft_claimed` (409) spent nothing. A Hacienda
+     * rejection counts as issued and the draft is not reopened. The answer is the one of `issue` plus
+     * `borradorId`.
+     *
+     * @param array<string, mixed> $request Same array as {@see Facta::issue()}.
+     * @param array<string, mixed> $options Same as {@see Facta::issue()}: `idempotencyKey`, `deliver`, `timeoutMs`, `headers`.
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function issueDraft(string $draftId, int $version, array $request, array $options = []): array
+    {
+        $id = Catalog::requireId($draftId, 'draft');
+        $options = $this->options($options, ['idempotencyKey', 'deliver']);
+        $deliver = $options['deliver'] ?? null;
+        unset($options['deliver']);
+        $body = self::withDelivery($request, $deliver);
+        $body['version'] = self::draftVersion($version);
+        return $this->callArray('POST', '/v1/drafts/' . rawurlencode($id) . '/issue', $body, $options);
+    }
+
+    /**
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    private static function draftBody(array $request): array
+    {
+        if (isset($request['referencia']) && (!is_string($request['referencia']) || $request['referencia'] === '' || strlen($request['referencia']) > 64)) {
+            throw new \InvalidArgumentException('referencia must be a text of 1 to 64 characters.');
+        }
+        return $request;
+    }
+
+    private static function draftVersion(int $version): int
+    {
+        if ($version < 1) {
+            throw new \InvalidArgumentException('version must be the draft\'s version number read from the draft (for example 3).');
+        }
+        return $version;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function draftOf(array $payload): array
+    {
+        if (!isset($payload['borradorId']) || !is_string($payload['borradorId']) || !isset($payload['version']) || !is_int($payload['version'])) {
+            throw new FactaError(FactaError::INTERNAL_ERROR, 'The draft answer carries no id and version.', 502);
+        }
+        return $payload;
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     * @param string[]             $allowed
+     * @return array<string, mixed>
+     */
+    private static function webhookBody(array $input, array $allowed, bool $create): array
+    {
+        $body = [];
+        foreach ($input as $name => $value) {
+            if (!in_array($name, $allowed, true)) {
+                throw new \InvalidArgumentException('Unknown webhook field: ' . (string) $name . '.');
+            }
+            $body[$name] = $value;
+        }
+        if ($create && (!isset($body['url']) || !is_string($body['url']) || trim($body['url']) === '')) {
+            throw new \InvalidArgumentException('A webhook needs a url.');
+        }
+        if (!$create && $body === []) {
+            throw new \InvalidArgumentException('Pass at least one field to change.');
+        }
+        if (isset($body['eventos'])) {
+            if (!is_array($body['eventos'])) {
+                throw new \InvalidArgumentException('eventos must be a list of event names.');
+            }
+            $body['eventos'] = array_values($body['eventos']);
+        }
+        return $body;
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @return array<string, mixed>
+     */
+    private function callOptions(array $options): array
+    {
+        return array_intersect_key($options, ['timeoutMs' => true, 'headers' => true]);
+    }
+
     /**
      * @param string[]                  $keys
      * @param array<string, mixed>|null $body
@@ -1067,10 +1414,11 @@ final class Facta
      */
     private function catalogWrite(string $method, string $path, array $keys, ?array $body, array $options, ?string $id): array
     {
+        $this->lastHeaders = null;
         $payload = $this->callArray($method, $path, $body, $options);
         $record = Catalog::recordOf($payload, $keys);
         if ($record !== null) {
-            return self::normalizeRecord($path, $record);
+            return $this->withRevision(self::normalizeRecord($path, $record));
         }
         if ($method === 'DELETE' && $id !== null) {
             return self::normalizeRecord($path, ['id' => $id, 'activo' => false]);
@@ -1093,21 +1441,19 @@ final class Facta
             throw new \InvalidArgumentException('catalog search limit must be an integer from 1 to 500.');
         }
         $all = ($options['includeInactive'] ?? false) === true;
-        return $this->catalogRead(function () use ($path, $keys, $query, $limit, $all): array {
-            $extra = ['buscar' => trim($query)];
-            if ($all) {
-                $extra['incluirInactivos'] = 'true';
-            }
-            if ($limit <= self::SERVER_CATALOG_PAGE) {
-                $payload = $this->callArray('GET', $path . self::queryString($extra + ['limite' => (string) $limit]), null, []);
-                $rows = array_map(static function (array $row) use ($path): array {
-                    return self::normalizeRecord($path, $row);
-                }, Catalog::rowsOf($payload, $keys));
-            } else {
-                $rows = $this->listAll($path, $keys, $extra);
-            }
-            return array_slice(self::onlyActive($rows, $all), 0, $limit);
-        });
+        $extra = ['buscar' => trim($query)];
+        if ($all) {
+            $extra['incluirInactivos'] = 'true';
+        }
+        if ($limit <= self::SERVER_CATALOG_PAGE) {
+            $payload = $this->callArray('GET', $path . self::queryString($extra + ['limite' => (string) $limit]), null, []);
+            $rows = array_map(static function (array $row) use ($path): array {
+                return self::normalizeRecord($path, $row);
+            }, Catalog::rowsOf($payload, $keys));
+        } else {
+            $rows = $this->listAll($path, $keys, $extra);
+        }
+        return array_slice(self::onlyActive($rows, $all), 0, $limit);
     }
 
     /**
@@ -1158,6 +1504,7 @@ final class Facta
      */
     private function getOne(string $path, array $keys): ?array
     {
+        $this->lastHeaders = null;
         try {
             $payload = $this->callArray('GET', $path, null, []);
         } catch (FactaError $cause) {
@@ -1167,7 +1514,7 @@ final class Facta
             throw $cause;
         }
         $record = Catalog::recordOf($payload, $keys);
-        return $record === null ? null : self::normalizeRecord($path, $record);
+        return $record === null ? null : $this->withRevision(self::normalizeRecord($path, $record));
     }
 
     /**
@@ -1182,127 +1529,49 @@ final class Facta
     }
 
     /**
-     * Picks the read path for the key's catalog mode: "plain" reads the API; "readable" tries the API
-     * and falls back to the snapshot (not available here); "encrypted" or unknown needs the snapshot.
+     * Turns the `ifMatch` option into the `If-Match` header the shared catalogue reads.
      *
-     * @template T
-     * @param callable(): T $viaApi
-     * @return T
-     */
-    private function catalogRead(callable $viaApi)
-    {
-        $mode = $this->catalogMode();
-        if ($mode === 'plain') {
-            return $viaApi();
-        }
-        if ($mode === 'readable') {
-            try {
-                return $viaApi();
-            } catch (FactaError $cause) {
-                $routeMissing = $cause->getStatus() === 404 || $cause->getStatus() === 501
-                    || $cause->getErrorCode() === FactaError::CATALOG_ENCRYPTED;
-                if (!$routeMissing || $this->unlockKey === null) {
-                    throw $cause;
-                }
-                throw $this->localCatalogUnavailable();
-            }
-        }
-        throw $this->localCatalogUnavailable();
-    }
-
-    private function localCatalogUnavailable(): FactaError
-    {
-        $missingKey = $this->unlockKey === null;
-        return new FactaError(
-            FactaError::UNAUTHORIZED,
-            $missingKey
-                ? 'This company\'s catalog is encrypted and no unlockKey was configured. Local catalog snapshots '
-                    . '(decrypted with the unlock key) arrive in a later version of this SDK; until then only readable '
-                    . 'or plain-text catalogs can be used through the API.'
-                : 'This company\'s catalog is encrypted. Local catalog snapshots (decrypted with the unlock key) '
-                    . 'arrive in a later version of this SDK; until then only readable or plain-text catalogs can be used through the API.',
-            0,
-            $missingKey
-                ? ['reason' => 'unlock_key_missing', 'missing' => 'unlockKey']
-                : ['reason' => 'local_snapshot_unsupported']
-        );
-    }
-
-    /**
-     * How the key reaches the catalog, learned from `/v1/status` and trusted for a minute.
-     * Null when the server does not say or status failed.
-     */
-    private function catalogMode(): ?string
-    {
-        $cached = $this->catalogModeCache;
-        if ($cached !== null && time() - $cached['at'] < self::CATALOG_MODE_TTL_SECONDS) {
-            return $cached['mode'];
-        }
-        try {
-            return $this->rememberCatalogMode($this->status());
-        } catch (FactaError $cause) {
-            return null;
-        }
-    }
-
-    /** @param array<string, mixed> $status */
-    private function rememberCatalogMode(array $status): ?string
-    {
-        $key = isset($status['llave']) && is_array($status['llave']) ? $status['llave'] : [];
-        // A company with an unencrypted catalog is advertised as "readable" for older SDKs;
-        // `catalogoSinCifrar` is what tells this SDK it is also writable.
-        $advertised = ($key['catalogoSinCifrar'] ?? null) === true ? 'plain' : ($key['catalogMode'] ?? null);
-        $mode = in_array($advertised, ['plain', 'readable', 'encrypted'], true) ? (string) $advertised : null;
-        $this->catalogModeCache = ['mode' => $mode, 'at' => time()];
-        return $mode;
-    }
-
-    /**
-     * True when `/v1/status` advertises a readable or plain catalog, so the server resolves
-     * `customerId` / `productId` itself. Any failure answers false.
-     */
-    private function serverResolvesCatalog(): bool
-    {
-        $cached = $this->catalogModeCache;
-        if ($cached !== null && time() - $cached['at'] < self::CATALOG_MODE_TTL_SECONDS) {
-            return $cached['mode'] === 'readable' || $cached['mode'] === 'plain';
-        }
-        try {
-            $mode = $this->rememberCatalogMode($this->status());
-        } catch (FactaError $cause) {
-            return false;
-        }
-        return $mode === 'readable' || $mode === 'plain';
-    }
-
-    /**
-     * References to the catalog (`receptor.customerId`, `items[].productId`) are resolved by the server
-     * when the key's catalog is readable or plain. An encrypted catalog is resolved from a local
-     * snapshot, which this SDK version cannot build.
-     *
-     * @param array<string, mixed> $request
+     * @param array<string, mixed> $options
      * @return array<string, mixed>
      */
-    private function resolveCatalogRefs(array $request): array
+    private function withIfMatch(array $options): array
     {
-        $receptor = $request['receptor'] ?? null;
-        $hasCustomer = is_array($receptor) && isset($receptor['customerId']) && is_string($receptor['customerId']);
-        $hasProduct = false;
-        if (isset($request['items']) && is_array($request['items'])) {
-            foreach ($request['items'] as $item) {
-                if (is_array($item) && isset($item['productId']) && is_string($item['productId'])) {
-                    $hasProduct = true;
-                    break;
-                }
-            }
+        if (!array_key_exists('ifMatch', $options)) {
+            return $options;
         }
-        if (!$hasCustomer && !$hasProduct) {
-            return $request;
+        $revision = $options['ifMatch'];
+        unset($options['ifMatch']);
+        if (is_string($revision) && preg_match('/^"?\d{1,12}"?$/', $revision) === 1) {
+            $revision = (int) trim($revision, '"');
         }
-        if ($this->serverResolvesCatalog()) {
-            return $request;
+        if (!is_int($revision) || $revision < 0) {
+            throw new \InvalidArgumentException('ifMatch must be the catalogue revision you read (a non-negative integer).');
         }
-        throw $this->localCatalogUnavailable();
+        $headers = isset($options['headers']) && is_array($options['headers']) ? $options['headers'] : [];
+        $headers['If-Match'] = '"' . $revision . '"';
+        $options['headers'] = $headers;
+        return $options;
+    }
+
+    /**
+     * Adds `revision` (from `Facta-Catalog-Revision` or `ETag`) to a record read or written on a
+     * company that shares its data key; other catalogues have no revision to report.
+     *
+     * @param array<string, mixed> $record
+     * @return array<string, mixed>
+     */
+    private function withRevision(array $record): array
+    {
+        $headers = $this->lastHeaders;
+        $this->lastHeaders = null;
+        if ($headers === null) {
+            return $record;
+        }
+        $raw = $headers['facta-catalog-revision'] ?? ($headers['etag'] ?? null);
+        if (is_string($raw) && preg_match('/^(?:W\/)?"?(\d{1,12})"?$/', trim($raw), $m) === 1) {
+            $record['revision'] = (int) $m[1];
+        }
+        return $record;
     }
 
     /**
@@ -1427,7 +1696,11 @@ final class Facta
         // Sent ONLY where it is needed: a password that rides on every request ends up in every proxy log.
         if (
             $this->signKey !== null && $method === 'POST'
-            && (in_array($path, self::SIGNING_PATHS, true) || preg_match(self::SIGNING_EVENT_PATH, $path) === 1)
+            && (
+                in_array($path, self::SIGNING_PATHS, true)
+                || preg_match(self::SIGNING_EVENT_PATH, $path) === 1
+                || preg_match(self::SIGNING_DRAFT_PATH, $path) === 1
+            )
         ) {
             $headers['X-Facta-Sign-Key'] = $this->signKey;
         }
@@ -1443,10 +1716,6 @@ final class Facta
         if ($method === 'POST') {
             $key = $options['idempotencyKey'] ?? null;
             $headers['Idempotency-Key'] = is_string($key) && $key !== '' ? $key : self::uuid4();
-            $fingerprint = $options['fingerprint'] ?? null;
-            if (is_string($fingerprint) && in_array($path, self::FINGERPRINT_PATHS, true)) {
-                $headers[self::FINGERPRINT_HEADER] = $fingerprint;
-            }
         }
         if (isset($options['headers']) && is_array($options['headers'])) {
             foreach ($options['headers'] as $name => $value) {
@@ -1516,6 +1785,7 @@ final class Facta
         }
 
         if ($status >= 200 && $status < 300) {
+            $this->lastHeaders = $response->getHeaders();
             if ($decoded instanceof \stdClass) {
                 if (isset($decoded->debug)) {
                     unset($decoded->debug); // not asked for: never hand a debug member to the caller
