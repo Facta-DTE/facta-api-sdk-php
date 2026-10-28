@@ -42,14 +42,18 @@ $facta = $make('FACTA_LIVE_KEY');
 $drafts = $make('FACTA_LIVE_DRAFT_KEY');
 $production = $make('FACTA_LIVE_PRODUCTION_KEY');
 
-$failed = 0;
+final class Tally
+{
+    /** @var int */
+    public static $failed = 0;
+}
+
 function check(string $name, callable $fn): void
 {
-    global $failed;
     try {
         out($name, true, (string) $fn());
     } catch (\Throwable $e) {
-        $failed++;
+        Tally::$failed++;
         $code = $e instanceof FactaError ? $e->getErrorCode() . ' ' . $e->getStatus() . ' ' : '';
         out($name, false, trim($code . substr($e->getMessage(), 0, 200)));
     }
@@ -69,7 +73,7 @@ function refusal(callable $call, string $code, int $status): FactaError
     throw new \RuntimeException('expected ' . $code . ', the call succeeded');
 }
 
-/** @param mixed $details */
+/** @return mixed */
 function detailOf(FactaError $e, string $name)
 {
     $d = $e->getDetails();
@@ -79,8 +83,10 @@ function detailOf(FactaError $e, string $name)
     return is_array($d) ? ($d[$name] ?? null) : null;
 }
 
-$customer = null;
-$product = null;
+/** @var array<string, mixed> $customer */
+$customer = [];
+/** @var array<string, mixed> $product */
+$product = [];
 
 check('status', static function () use ($facta) {
     $status = $facta->status();
@@ -102,6 +108,9 @@ check('customers.create+duplicate', static function () use ($facta, $tag, $dui, 
 });
 check('customers.revision+ifMatch', static function () use ($facta, &$customer) {
     $read = $facta->getCustomer($customer['id']);
+    if ($read === null) {
+        throw new \RuntimeException('getCustomer returned null');
+    }
     $updated = $facta->updateCustomer($customer['id'], ['telefono' => '22223333'], ['ifMatch' => $read['revision']]);
     if (!($updated['revision'] > $read['revision'])) {
         throw new \RuntimeException('revision ' . $read['revision'] . ' -> ' . $updated['revision']);
@@ -143,6 +152,9 @@ check('customers.list+search', static function () use ($facta, $tag, &$customer)
 check('products.create+update+deactivate', static function () use ($facta, $tag, &$product) {
     $product = $facta->createProduct(['descripcion' => 'Producto SDK PHP ' . $tag, 'tipoItem' => 2, 'precioUni' => 2.5, 'ivaIncluido' => false, 'codigo' => 'SDKPHP-' . $tag], ['idempotencyKey' => 'sdk-php-product-' . $tag]);
     $read = $facta->getProduct($product['id']);
+    if ($read === null) {
+        throw new \RuntimeException('getProduct returned null');
+    }
     $updated = $facta->updateProduct($product['id'], ['precioUni' => 3], ['ifMatch' => $read['revision']]);
     refusal(static function () use ($facta, $product, $read) {
         $facta->updateProduct($product['id'], ['precioUni' => 4], ['ifMatch' => $read['revision']]);
@@ -253,4 +265,4 @@ check('environment.production-key-on-test-company', static function () use ($pro
     return 'facta_live_ key on a company in 00 -> ' . $error->getErrorCode();
 });
 
-exit($failed === 0 ? 0 : 1);
+exit(Tally::$failed === 0 ? 0 : 1);
