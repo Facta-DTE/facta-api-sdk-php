@@ -14,6 +14,7 @@ use Facta\Api\Support\Delivery;
 use Facta\Api\Support\Diagnostics;
 use Facta\Api\Support\ManagedStorage;
 use Facta\Api\Support\Redactor;
+use Facta\Api\Support\Warnings;
 
 /**
  * Client for the Facta DTE API.
@@ -36,9 +37,15 @@ use Facta\Api\Support\Redactor;
  */
 final class Facta
 {
-    public const VERSION = '0.2.0-rc.1';
+    public const VERSION = '0.2.0-rc.2';
 
     public const DEFAULT_BASE_URL = 'https://hcnvknpsbadplnfcflxx.supabase.co/functions/v1/api-v1';
+
+    /**
+     * The staging API (environment 00 only; keys `facta_test_` created in staging.factadte.com). The client
+     * still defaults to {@see Facta::DEFAULT_BASE_URL}, so staging needs `'baseUrl' => Facta::STAGING_BASE_URL`.
+     */
+    public const STAGING_BASE_URL = 'https://eobxzotnqzgtpuqvmpkc.supabase.co/functions/v1/api-v1';
 
     private const DEFAULT_REGION = 'us-west-2';
     private const REGION_PATTERN = '/^[a-z]{2}(?:-[a-z]+)+-\d+$/';
@@ -92,6 +99,8 @@ final class Facta
     private $servedRegion = null;
     /** @var array<string, string>|null Response headers of the last successful call (single-threaded read-back). */
     private $lastHeaders = null;
+    /** @var string|null The `Facta-Warning` header of the last successful call. */
+    private $lastWarningHeader = null;
 
     /**
      * @param array<string, mixed> $options
@@ -358,7 +367,9 @@ final class Facta
         $deliver = $options['deliver'] ?? null;
         unset($options['deliver']);
 
-        return $this->callArray('POST', '/v1/dte', self::withDelivery($request, $deliver), $options);
+        $this->lastWarningHeader = null;
+        $result = $this->callArray('POST', '/v1/dte', self::withDelivery($request, $deliver), $options);
+        return Warnings::attach($result, $this->lastWarningHeader);
     }
 
     /**
@@ -380,6 +391,7 @@ final class Facta
     {
         $options = $this->options($options, ['idempotencyKey', 'headers', 'timeoutMs']);
         $raw = $this->execute('POST', '/v1/dte/prepare', $request, $options, false);
+        $warningHeader = $this->lastWarningHeader;
         if (!($raw instanceof \stdClass)) {
             throw new FactaError(FactaError::INTERNAL_ERROR, 'API response was not a JSON object.', 200);
         }
@@ -390,7 +402,7 @@ final class Facta
             throw new FactaError(FactaError::INTERNAL_ERROR, 'API response was not a JSON object.', 200);
         }
         $prepared['documento'] = $document;
-        return $prepared;
+        return Warnings::attach($prepared, $warningHeader);
     }
 
     /**
@@ -412,7 +424,9 @@ final class Facta
         if (!is_string($token) || $token === '' || !($document instanceof \stdClass || is_array($document))) {
             throw new \InvalidArgumentException('sign() needs the result of prepare(), with prepareToken and documento.');
         }
-        return $this->callArray('POST', '/v1/dte/sign', ['prepareToken' => $token, 'documento' => $document], $options);
+        $this->lastWarningHeader = null;
+        $result = $this->callArray('POST', '/v1/dte/sign', ['prepareToken' => $token, 'documento' => $document], $options);
+        return Warnings::attach($result, $this->lastWarningHeader);
     }
 
     // --- Delivery -----------------------------------------------------------------------------
@@ -1333,7 +1347,9 @@ final class Facta
         unset($options['deliver']);
         $body = self::withDelivery($request, $deliver);
         $body['version'] = self::draftVersion($version);
-        return $this->callArray('POST', '/v1/drafts/' . rawurlencode($id) . '/issue', $body, $options);
+        $this->lastWarningHeader = null;
+        $result = $this->callArray('POST', '/v1/drafts/' . rawurlencode($id) . '/issue', $body, $options);
+        return Warnings::attach($result, $this->lastWarningHeader);
     }
 
     /**
@@ -1688,6 +1704,7 @@ final class Facta
      */
     private function execute(string $method, string $path, $body, array $options, bool $binary)
     {
+        $this->lastWarningHeader = null;
         $headers = [
             'Accept' => $binary ? '*/*' : 'application/json',
             'User-Agent' => 'facta-api-sdk-php/' . self::VERSION . ' PHP/' . PHP_VERSION,
@@ -1786,6 +1803,7 @@ final class Facta
 
         if ($status >= 200 && $status < 300) {
             $this->lastHeaders = $response->getHeaders();
+            $this->lastWarningHeader = $response->getHeader('facta-warning');
             if ($decoded instanceof \stdClass) {
                 if (isset($decoded->debug)) {
                     unset($decoded->debug); // not asked for: never hand a debug member to the caller
@@ -1868,7 +1886,8 @@ final class Facta
             $safeMessage,
             $response->getStatus(),
             Redactor::redact($details, $this->secrets),
-            self::retryAfterMs($response->getHeader('retry-after'))
+            self::retryAfterMs($response->getHeader('retry-after')),
+            $response->getHeader('facta-warning')
         );
     }
 

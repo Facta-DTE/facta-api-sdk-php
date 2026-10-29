@@ -4,7 +4,7 @@ PHP client for the [Facta DTE](https://factadte.com) API, El Salvador's electron
 invoicing service. It talks to the API over HTTPS; **it never signs a document and never
 computes tax**. Signing, totals, IVA, correlatives and validation happen on the server.
 
-> **Status: tier 1 (0.2.0-rc.1 is a release candidate; 0.1.0 is the stable release).** Everything that needs only
+> **Status: tier 1 (0.2.0-rc.2 is a release candidate; 0.1.0 is the stable release).** Everything that needs only
 > HTTP is implemented: issuing, prepare/sign, queries, downloads, invalidation, returns,
 > delivery, managed storage, the catalog, the catalogue changes feed and webhooks (see
 > [Methods](#methods)). The catalogue is always read through the API, also when the company
@@ -70,6 +70,44 @@ The server computes every amount, signs and transmits; the SDK only sends your r
 Answers come back as plain associative arrays with the API's own field names and `estado`
 values. Requests are PHP arrays too: a list becomes a JSON array, an associative array a JSON
 object, and `new \stdClass()` is an empty object `{}`.
+
+### Discounts, several payments, VAT class and warnings
+
+```php
+use Facta\Api\Facta;
+use Facta\Api\Pago;
+use Facta\Api\SaleType;
+
+$facta = new Facta([
+    'apiKey'  => getenv('FACTA_API_KEY'),            // facta_test_... created in staging.factadte.com
+    'baseUrl' => Facta::STAGING_BASE_URL,            // the default stays production
+]);
+$result = $facta->issue([
+    'tipoDte' => '03',
+    'receptor' => ['customerId' => $customerId],
+    'items' => [
+        ['descripcion' => 'Cafe', 'cantidad' => 2, 'precioUni' => 30, 'montoDescu' => 5],   // discount of the line, in money
+        ['descripcion' => 'Libro', 'cantidad' => 1, 'precioUni' => 10, 'tipoVenta' => SaleType::EXENTA],
+    ],
+    'pagos' => [new Pago('01', 25), new Pago('02', 40, 'VOUCHER-0042')],   // must add up to the total, to the cent
+    'aplicarRetencionIva' => true,    // 01 and 03 only; never automatic
+    // 'aplicarPercepcionIva' => true // 03 only
+]);
+foreach ($result['unknownFields'] ?? [] as $warning) {
+    error_log('Facta ignored ' . $warning['campo'] . ' (did you mean ' . ($warning['sugerencia'] ?? '?') . ')');
+}
+```
+
+* `montoDescu` is the discount of one line in money, in the same VAT basis as `precioUni`.
+* `pagos` takes 1 to 10 rows (01, 03, 11, 14), not together with `formaPago`, not on 05/06, not on credit.
+  `Pago` is optional: plain arrays work too.
+* `tipoVenta` (`gravada` default, `exenta`, `no_sujeta`) is yours to choose and valid in 01, 03, 05, 06.
+* **Unknown fields are always a warning, never an error.** A request field Facta DTE does not know is ignored and
+  is not part of the document; the answer says so in `advertencias` (`campo_desconocido`, with `campo` and
+  `sugerencia`). The SDK also lists them in `unknownFields` and parses the `Facta-Warning` header into
+  `factaWarning` (`['code' => ..., 'count' => ...]`), on `issue()`, `prepare()`, `sign()` and `issueDraft()`, only when
+  there is something to report. On a failure, `FactaError::getUnknownFields()` and `getFactaWarning()` read them.
+  Check the first answer of your integration: an ignored field is a discount or a payment the document does not carry.
 
 ### Methods
 

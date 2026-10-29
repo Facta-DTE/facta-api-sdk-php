@@ -230,6 +230,6 @@ final class WebhookTest extends ClientCase
 
     public function testTheClientVersionIsTheProposedRelease(): void
     {
-        $this->assertSame('0.2.0-rc.1', Facta::VERSION);
+        $this->assertSame('0.2.0-rc.2', Facta::VERSION);
     }
 }
