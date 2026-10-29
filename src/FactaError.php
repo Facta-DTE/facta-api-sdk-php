@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Facta\Api;
 
+use Facta\Api\Support\Warnings;
+
 /**
  * The error the SDK throws, and the only thing a caller should switch on.
  *
@@ -103,6 +105,9 @@ class FactaError extends \Exception
     /** @var int|null */
     private $retryAfterMs;
 
+    /** @var string|null */
+    private $factaWarning;
+
     /**
      * @param mixed $details Decoded `error.details` of the response, already redacted.
      */
@@ -111,12 +116,14 @@ class FactaError extends \Exception
         string $message,
         int $status = 0,
         $details = null,
-        ?int $retryAfterMs = null
+        ?int $retryAfterMs = null,
+        ?string $factaWarning = null
     ) {
         parent::__construct($message, $status);
         $this->errorCode = $errorCode;
         $this->details = $details;
         $this->retryAfterMs = $retryAfterMs;
+        $this->factaWarning = $factaWarning;
     }
 
     /** One of the string constants above (or a code a newer server added). */
@@ -141,6 +148,27 @@ class FactaError extends \Exception
     public function getRetryAfterMs(): ?int
     {
         return $this->retryAfterMs;
+    }
+
+    /**
+     * The `campo_desconocido` warnings the server attached to this failure (`details.advertencias`):
+     * request fields Facta DTE ignored. Empty when there are none. Unknown fields are warnings, never errors.
+     *
+     * @return array<int, array{codigo: string, campo: string, mensaje: string, sugerencia?: string}>
+     */
+    public function getUnknownFields(): array
+    {
+        return Warnings::unknownFields($this->details);
+    }
+
+    /**
+     * The `Facta-Warning` response header (`campo_desconocido; campos=2`), parsed; null when absent.
+     *
+     * @return array{code: string, count: int|null}|null
+     */
+    public function getFactaWarning(): ?array
+    {
+        return Warnings::parseHeader($this->factaWarning);
     }
 
     /**

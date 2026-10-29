@@ -656,6 +656,16 @@ paths:
         también). Solo un vault de **firma** atrasado se rechaza
         (`sign_vault_missing`): sus credenciales cambiaron.
 
+        **Campos que no existen.** Un campo que Facta DTE no reconoce (por
+        ejemplo `descuento` en lugar de `items[].montoDescu`) **no rechaza** la
+        petición: se ignora, no forma parte del documento, y la respuesta lo
+        dice en `advertencias` con el código `campo_desconocido`, el camino
+        exacto (`campo`) y, cuando es obvio, `sugerencia`. También llega en la
+        cabecera `Facta-Warning`. Si la petición falla por otra razón, las
+        mismas advertencias vienen en `error.details.advertencias`. Revise la
+        primera respuesta de su integración: un campo ignorado es un descuento,
+        un pago o un régimen que el documento no lleva.
+
         Devuelve el JWS firmado además del documento: es lo que el cliente
         archiva, porque volver a serializar el JSON después no reproduce los
         mismos bytes que Hacienda validó.
@@ -752,6 +762,7 @@ paths:
             estaba guardada de un intento anterior con la misma llave.
           headers:
             Idempotency-Replayed: { $ref: "#/components/headers/IdempotencyReplayed" }
+            Facta-Warning: { $ref: "#/components/headers/FactaWarning" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DteSellado" }
@@ -787,8 +798,12 @@ paths:
           description: |
             El documento no pasó — y hay dos razones muy distintas:
 
-            · `validation_failed`: no cumple el esquema oficial. **No se gastó
-              correlativo**; `details.issues` dice qué campo.
+            · `validation_failed`: no cumple el esquema oficial, o un código no
+              es del catálogo del Ministerio (`formaPago`, `pagos[].codigo`,
+              `exportacion.recintoFiscal`, `.tipoRegimen`, `.regimen`), o los
+              `pagos` no suman el total. **No se gastó correlativo**;
+              `details.issues` dice qué campo, o `details.field` y
+              `details.supported` los códigos válidos.
             · `retention_mixed_class_unsupported`: `aplicarReteRenta` sobre líneas
               exentas o no sujetas. **No se gastó correlativo**.
             · `mh_rejected`: Hacienda lo leyó y lo negó. **Sí se gastó**, y
@@ -929,6 +944,7 @@ paths:
           description: Correlativo reservado; el documento todavía no está firmado.
           headers:
             Idempotency-Replayed: { $ref: "#/components/headers/IdempotencyReplayed" }
+            Facta-Warning: { $ref: "#/components/headers/FactaWarning" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DtePreparado" }
@@ -2830,6 +2846,13 @@ components:
     RetryAfter:
       schema: { type: integer }
       description: Segundos que conviene esperar. Solo en los errores donde esperar arregla algo.
+    FactaWarning:
+      schema: { type: string, example: "campo_desconocido; campos=2" }
+      description: |
+        Presente cuando la respuesta trae advertencias `campo_desconocido`:
+        `campo_desconocido; campos=N`, con N los campos que Facta DTE no
+        reconoció y no usó. El detalle (cuáles, y qué quiso decir) está en
+        `advertencias`. Un reintento con la misma `Idempotency-Key` lo repite.
     IdempotencyReplayed:
       schema: { type: boolean }
       description: |
@@ -3480,7 +3503,8 @@ components:
           ajustar algo que no está en nuestro índice.
 
         Un código que no está en su índice es `404`; uno que está pero sin sello
-        es `400` — Hacienda no selló nada que ajustar.
+        es `400` — Hacienda no selló nada que ajustar. **Ambas respuestas llegan
+        antes de reservar el correlativo**: la nota no gasta ningún número.
       properties:
         codigoGeneracion: { type: string, format: uuid }
         tipoDocumento: { type: string, example: "03" }
@@ -3530,9 +3554,29 @@ components:
             escriba la redacción del Ministerio es pedirle que la escriba mal.
             Sin incoterm, el código y su descripción salen `null` juntos.
           example: "09"
-        recintoFiscal: { type: string, nullable: true, description: "CAT-027; null en exportación de servicios." }
-        tipoRegimen: { type: string, nullable: true, description: CAT-033. }
-        regimen: { type: string, nullable: true, description: CAT-028. }
+        recintoFiscal:
+          type: string
+          nullable: true
+          description: |
+            Recinto fiscal, **código de CAT-027** (`01`, `02`, … `99`); `null`
+            u omitido en exportación de servicios. Un código que no es del
+            catálogo es `422 validation_failed` con `details.supported`, sin
+            gastar correlativo.
+        tipoRegimen:
+          type: string
+          nullable: true
+          enum: ["EX-1", "EX-2", "EX-3", "TA-1", null]
+          description: Tipo de régimen, **código de CAT-033**. Mismo trato que `recintoFiscal`.
+        regimen:
+          type: string
+          nullable: true
+          description: |
+            Régimen de exportación, **código de CAT-028** (`1000.000`,
+            `1040.000`, …). Se acepta también la forma compuesta de hasta 13
+            caracteres `<CAT-033>.<CAT-028>` (por ejemplo `EX-1.1000.000`). Un
+            código que no es del catálogo —por ejemplo `EX-1` solo, que es un
+            tipo de régimen— es `422 validation_failed` con `details.supported`,
+            sin gastar correlativo.
         flete:
           type: number
           minimum: 0
@@ -3610,6 +3654,27 @@ components:
             una exportación (11) no hay IVA que incluir. En una FSE (14) el
             precio es el precio: no se le suma ni se le quita nada. Así lo
             definen los esquemas oficiales.
+        montoDescu:
+          type: number
+          minimum: 0
+          description: |
+            Descuento de **esta línea**, en dinero (no en porcentaje), en la
+            **misma base de IVA que `precioUni`**: en una FE (01) incluye el
+            IVA, en un CCF (03), una nota (05/06) y una exportación (11) no, y
+            en una FSE (14) es el precio tal cual. Vale en los seis tipos.
+
+            Tiene que estar entre 0 y `cantidad × precioUni` (el total de la
+            línea); si no, es `400`. Con `productId` y sin `precioUni`, el
+            tope se comprueba cuando el servidor trae el precio del catálogo.
+            El servidor calcula el resto: la línea sale con `montoDescu` y su
+            venta ya descontada, el IVA se calcula sobre lo descontado y el
+            resumen trae `totalDescu`. Es un descuento por línea: no existe
+            todavía un descuento global en el cable.
+
+            **El nombre es exacto.** `descuento`, `discount` o `descu` no
+            existen: se ignoran y la respuesta lo avisa con una advertencia
+            `campo_desconocido` que sugiere `montoDescu`.
+          example: 2.5
         codigo: { type: string, nullable: true }
         tipoItem: { type: integer, description: "CAT-011. 1 bien, 2 servicio, 3 ambos, 4 otro.", default: 2 }
         uniMedida: { type: integer, description: "CAT-014. 59 = unidad.", default: 59 }
@@ -3765,7 +3830,47 @@ components:
           type: integer
           minimum: 1
           description: Cuántos de esos plazos. Solo con `condicionOperacion` 2.
-        formaPago: { type: string, description: "CAT-017. 01 = efectivo.", example: "01" }
+        formaPago:
+          type: string
+          nullable: true
+          enum: ["01", "02", "03", "04", "05", "08", "09", "11", "12", "13", "14", "99", null]
+          example: "01"
+          description: |
+            Forma de pago, **código de CAT-017**: 01 billetes y monedas, 02
+            tarjeta de débito, 03 tarjeta de crédito, 04 cheque, 05
+            transferencia o depósito bancario, 08 dinero electrónico, 09
+            monedero electrónico, 11 bitcoin, 12 otras criptomonedas, 13
+            cuentas por pagar del receptor, 14 bonos o certificados de regalo,
+            99 otros. Sin él (u omitido o `null`) el servidor usa 01 (05 en la
+            exportación). **Un código que no es del catálogo es
+            `422 validation_failed` con `details.field` y `details.supported`,
+            y no gasta correlativo**: el esquema oficial solo acota el largo,
+            así que antes se firmaba y Hacienda lo rechazaba en vuelo. En 05 y
+            06 no se usa. No se combina con `pagos`.
+        pagos:
+          type: array
+          minItems: 1
+          maxItems: 10
+          description: |
+            **Varias formas de pago** para un mismo documento (01, 03, 11 y
+            14). Cada fila es `{ codigo, montoPago, referencia? }` y **la suma
+            de `montoPago` tiene que igualar el total a pagar del documento, al
+            centavo** (`422 validation_failed` con `details.totalPagar` y
+            `details.sumaPagos` si no, antes de reservar el correlativo). Sin
+            `pagos` el documento lleva una sola fila por el total, como
+            siempre.
+
+            Reglas: no se manda junto a `formaPago` (`400`); no existe en 05 ni
+            06, que no liquidan nada (`400`); y **no se combina con una
+            operación a crédito** (`condicionOperacion` 2, `422`): cómo se
+            reparte el plazo entre varias formas de pago no está publicado por
+            Hacienda, así que no se adivina. A crédito use `formaPago` con
+            `plazo` y `periodo`. Con `condicionOperacion` 3 (otro) sí se
+            admite. Hasta 10 filas.
+          items: { $ref: "#/components/schemas/Pago" }
+          example:
+            - { codigo: "01", montoPago: 40 }
+            - { codigo: "02", montoPago: 60, referencia: "VOUCHER-0042" }
         observaciones: { type: string, nullable: true }
         apendice:
           type: array
@@ -3792,6 +3897,22 @@ components:
             - { campo: vendedor, etiqueta: Vendedor, valor: Ana Pérez }
         representacion:
           $ref: "#/components/schemas/Representacion"
+
+    Pago:
+      type: object
+      required: [codigo, montoPago]
+      description: Una forma de pago de `pagos[]`.
+      properties:
+        codigo:
+          type: string
+          enum: ["01", "02", "03", "04", "05", "08", "09", "11", "12", "13", "14", "99"]
+          description: Código de CAT-017 (ver `formaPago`).
+        montoPago:
+          type: number
+          exclusiveMinimum: 0
+          multipleOf: 0.01
+          description: Lo pagado con esta forma, con a lo más dos decimales.
+        referencia: { type: string, nullable: true, maxLength: 50, description: "Voucher, número de cheque, etc." }
 
     FilaApendice:
       type: object
@@ -4337,10 +4458,22 @@ components:
         advertencias:
           type: array
           description: |
-            Solo aparece cuando un archivo está en riesgo; su ausencia es la
-            normalidad. Cada elemento trae `codigo` y `mensaje` (en español, de
-            usted). Un reintento con la misma `Idempotency-Key` devuelve las
-            mismas advertencias.
+            Aparece cuando hay algo que revisar; su ausencia es la normalidad.
+            Cada elemento trae `codigo` y `mensaje` (en español, de usted). Un
+            reintento con la misma `Idempotency-Key` devuelve las mismas
+            advertencias. Hay dos clases: las que dicen que **un archivo está
+            en riesgo** y la que dice que **la petición traía un campo que no
+            existe** (`campo_desconocido`); la segunda no indica ningún riesgo
+            para los archivos.
+
+            · `campo_desconocido`: la petición trajo un campo que Facta DTE no
+            conoce, así que se **ignoró y no forma parte del documento**. Trae
+            `campo` (el camino exacto, p. ej. `items[2].descuento`,
+            `receptor.direccion.depto`) y, cuando es obvio, `sugerencia` (p. ej.
+            `items[2].montoDescu`). Sale hasta para 25 campos por respuesta y
+            la cabecera `Facta-Warning` cuenta los que se listan. Los objetos
+            `entrega`, `apendice` y `representacion` son estrictos: un campo de
+            más ahí es `400`, no una advertencia.
 
             · `copia_solo_temporal`: no se pudo guardar en el almacenamiento
             administrado; el archivo solo está en la copia temporal (una hora).
@@ -4373,9 +4506,10 @@ components:
             type: object
             required: [codigo, mensaje]
             properties:
-              codigo: { type: string, enum: [copia_solo_temporal, sin_almacenamiento_duradero, sin_copia_en_servidor, plantilla_no_aplicada] }
+              codigo: { type: string, enum: [copia_solo_temporal, sin_almacenamiento_duradero, sin_copia_en_servidor, plantilla_no_aplicada, campo_desconocido] }
               mensaje: { type: string }
-              campo: { type: string, description: "Solo `plantilla_no_aplicada`: el campo de la petición no atendido.", example: representacion.plantilla.ticket }
+              campo: { type: string, description: "`plantilla_no_aplicada`: el campo de la petición no atendido. `campo_desconocido`: el camino del campo que no existe.", example: representacion.plantilla.ticket }
+              sugerencia: { type: string, description: "Solo `campo_desconocido`: el campo que probablemente quiso decir.", example: "items[0].montoDescu" }
               motivo: { type: string, enum: [plan, no_existe, incompatible], description: "Solo `plantilla_no_aplicada`: por qué no se aplicó." }
         entrega:
           $ref: "#/components/schemas/EntregaMarcada"
@@ -4426,6 +4560,17 @@ components:
         totales: { $ref: "#/components/schemas/Totales" }
         documento: { type: object }
         prepareToken: { type: string }
+        advertencias:
+          type: array
+          description: Las mismas advertencias que el sellado (ver `DteSellado.advertencias`), p. ej. `campo_desconocido`.
+          items:
+            type: object
+            required: [codigo, mensaje]
+            properties:
+              codigo: { type: string }
+              mensaje: { type: string }
+              campo: { type: string }
+              sugerencia: { type: string }
 
     DteConsultado:
       type: object
@@ -5037,8 +5182,8 @@ x-facta-errores:
     hacer: '`details.field` señala el campo cuando lo hay. No gasta correlativo.'
   validation_failed:
     status: 422
-    cuando: El documento no cumple el esquema oficial del Ministerio de Hacienda.
-    hacer: '`details.issues` lista cada campo. **No gasta correlativo**: la validación corre antes de reservar.'
+    cuando: El documento no cumple el esquema oficial del Ministerio de Hacienda, un código no es del catálogo (`formaPago`, `pagos[].codigo`, `exportacion.recintoFiscal`, `.tipoRegimen`, `.regimen`), o `pagos` no suma el total.
+    hacer: '`details.issues` lista cada campo; un código de catálogo trae `details.field`, `details.catalog` y `details.supported`; `pagos` trae `details.totalPagar` y `details.sumaPagos`. **No gasta correlativo**: la validación corre antes de reservar.'
   retention_mixed_class_unsupported:
     status: 422
     cuando: Se pide `aplicarReteRenta` en un documento con alguna línea `exenta` o `no_sujeta` (`items[].tipoVenta`).

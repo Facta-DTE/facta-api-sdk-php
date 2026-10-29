@@ -6,6 +6,17 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0-rc.2] - 2026-10-29
+
+**Release candidate** (pre-release tag; the stable release stays at 0.1.0). Additive only: every call, constant, option and return shape of 0.1.0 and 0.2.0-rc.1 keeps working (`tests/BackwardCompatTest.php`). Matches the staging API of 29-Oct-2026.
+
+### Added
+
+- `items[].montoDescu` (discount of a line in money), `pagos` with the new `Pago` value object (plain arrays still work), `items[].tipoVenta` with the `SaleType` constants, and `aplicarRetencionIva` (01, 03) / `aplicarPercepcionIva` (03). The request is still a plain array that travels untouched: the server owns every rule.
+- `campo_desconocido` warnings: `issue()`, `prepare()`, `sign()` and `issueDraft()` results gain `unknownFields` (`campo`, `mensaje`, `sugerencia`) and `factaWarning` (the parsed `Facta-Warning` header) only when there is something to report. `FactaError::getUnknownFields()` reads `details.advertencias` and `getFactaWarning()` the header. Unknown fields stay warnings: they are never rejected.
+- `Facta::STAGING_BASE_URL`. The default base URL is still production.
+- `FactaError` takes an optional sixth constructor argument (the header); existing calls are unchanged.
+
 ## [0.2.0-rc.1] - 2026-10-28
 
 **Release candidate.** Tagged as a pre-release: Composer's default `stable` stability and constraints such as `^0.1` do not select it. Install it explicitly with `composer require facta-dte/api:0.2.0-rc.1`. The stable release stays at 0.1.0 until the shared data key is in production. The notes below are the planned 0.2.0 notes.
