@@ -14,6 +14,7 @@ use Facta\Api\Support\Delivery;
 use Facta\Api\Support\Diagnostics;
 use Facta\Api\Support\ManagedStorage;
 use Facta\Api\Support\Redactor;
+use Facta\Api\Support\StorageConfirmation;
 use Facta\Api\Support\Warnings;
 
 /**
@@ -101,6 +102,8 @@ final class Facta
     private $lastHeaders = null;
     /** @var string|null The `Facta-Warning` header of the last successful call. */
     private $lastWarningHeader = null;
+    /** @var array<string, mixed>|null The capability numbers of `/v1/storage/status`, read once per client. */
+    private $storageCapabilities = null;
 
     /**
      * @param array<string, mixed> $options
@@ -838,6 +841,311 @@ final class Facta
             throw new FactaError(FactaError::STORAGE_CONTRACT_INVALID, 'API returned an invalid managed-storage repair receipt.', 502);
         }
         return $receipt;
+    }
+
+    // --- Temporary copy: the unconfirmed list and the storage confirmation ----------------------
+    //
+    // Facta keeps an encrypted temporary copy of every sealed document. It is deleted 2 days after
+    // the document is marked as stored, or 30 days after sealing if nobody marks it. The company
+    // owner is mailed from day one (production only). A document is marked when Facta verified a
+    // copy of its own, when a copy was reported to a synced destination, or when you call
+    // `confirmDocumentStorage()`.
+
+    /**
+     * The sealed documents that still depend on Facta's temporary encrypted copy, the ones deleted
+     * first at the top. Each row carries `borradoEl`, the date its copy is deleted if nobody
+     * confirms it. No document content, paths or receiver data. `download` scope.
+     *
+     * Poll it daily, or let `storeAndConfirmUnconfirmed()` drain it.
+     *
+     * @param array<string, mixed> $options `limit` (1 to 100, server default 50), `cursor` (the
+     *                                      `siguiente` of the previous page), `timeoutMs`.
+     * @return array{capabilityVersion: int, documentos: array<int, array<string, mixed>>, total: int, siguiente: string|null}
+     *         `total` counts every document still waiting, not only this page.
+     * @throws FactaError `storage_unsupported` on a server that predates the route; `storage_contract_invalid` on a malformed answer.
+     */
+    public function listUnconfirmedDocuments(array $options = []): array
+    {
+        $options = $this->options($options, ['limit', 'cursor']);
+        $limit = $options['limit'] ?? null;
+        $cursor = $options['cursor'] ?? null;
+        unset($options['limit'], $options['cursor']);
+        if ($limit !== null && (!is_int($limit) || $limit < 1 || $limit > 100)) {
+            throw new \InvalidArgumentException('limit must be an integer from 1 through 100.');
+        }
+        $query = [];
+        if ($limit !== null) {
+            $query['limit'] = (string) $limit;
+        }
+        if (is_string($cursor) && $cursor !== '') {
+            $query['cursor'] = $cursor;
+        }
+        try {
+            $value = $this->callArray('GET', '/v1/storage/unconfirmed' . self::queryString($query), null, $options);
+        } catch (FactaError $cause) {
+            if ($cause->getStatus() === 404 || $cause->getStatus() === 501) {
+                throw new FactaError(FactaError::STORAGE_UNSUPPORTED, 'This API server does not list unconfirmed documents.', $cause->getStatus());
+            }
+            throw $cause;
+        }
+        if (!StorageConfirmation::isUnconfirmedPage($value)) {
+            throw new FactaError(FactaError::STORAGE_CONTRACT_INVALID, 'API returned an invalid unconfirmed-documents response.', 502);
+        }
+        /** @var array{capabilityVersion: int, documentos: array<int, array<string, mixed>>, total: int, siguiente: string|null} $value */
+        return $value;
+    }
+
+    /**
+     * Tells Facta you stored the JSON of a sealed document, so its temporary encrypted copy is
+     * deleted 2 days later instead of at 30 days. `issue` scope. Safe to repeat: a second call
+     * answers `yaConfirmado => true` and keeps the first source.
+     *
+     * Give `sha256` (of the JSON bytes you stored, exactly as `downloadDocument($code, 'json')`
+     * returned them) or `bytes` and the SDK hashes them. A document issued by the API is checked
+     * against the file Facta can rebuild (`verificado => true`; a wrong hash is `FactaError`
+     * `storage_hash_mismatch` and nothing is recorded). A document issued from the app cannot be
+     * checked: it is accepted as `informado => true`.
+     *
+     * @param array<string, mixed> $confirmation `where` (short name of the place, never a secret) and
+     *                                           exactly one of `sha256` or `bytes`.
+     * @param array<string, mixed> $options      `timeoutMs`.
+     * @return array{codigoGeneracion: string, confirmado: bool, por: string, yaConfirmado: bool,
+     *               verificado: bool, informado: bool, borradoEl: string|null}
+     *         `por` is the FIRST source that marked the document (`facta_managed`, `facta_byos`,
+     *         `sdk_report`, `api_report`, `app_report` or `admin`).
+     * @throws FactaError `storage_unsupported` on a server that does not advertise
+     *                    `capabilities.storageConfirmation`; `not_found`; `storage_hash_mismatch`.
+     * @throws \InvalidArgumentException on a code that is not a UUID or a malformed confirmation.
+     */
+    public function confirmDocumentStorage(string $generationCode, array $confirmation, array $options = []): array
+    {
+        $options = $this->options($options, []);
+        if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $generationCode) !== 1) {
+            throw new \InvalidArgumentException('generationCode must be a UUID.');
+        }
+        $body = StorageConfirmation::body($confirmation);
+        $version = $this->storageCapabilities()['storageConfirmation'] ?? null;
+        if (!is_int($version) || $version < 1) {
+            throw new FactaError(FactaError::STORAGE_UNSUPPORTED, 'This API server does not advertise capabilities.storageConfirmation.', 501);
+        }
+        $value = $this->callArray('POST', '/v1/dte/' . rawurlencode($generationCode) . '/storage-confirmation', $body, $options);
+        if (!StorageConfirmation::isConfirmation($value)) {
+            throw new FactaError(FactaError::STORAGE_CONTRACT_INVALID, 'API returned an invalid storage-confirmation response.', 502);
+        }
+        /** @var array{codigoGeneracion: string, confirmado: bool, por: string, yaConfirmado: bool, verificado: bool, informado: bool, borradoEl: string|null} $value */
+        return $value;
+    }
+
+    /**
+     * Drains the unconfirmed list: for each document, downloads the JSON (and the PDF), hands them
+     * to YOUR `store` callable and confirms with the SHA-256 of the exact bytes you were given.
+     * Bounded (`limit`, default 200), safe to run daily, and it never throws for a per-document
+     * problem: read the report. A failed document is skipped (it stays on the list and in the
+     * owner's mail); the run stops early after `maxFailures` or on an error that affects every
+     * document (a revoked key, a server without the capability).
+     *
+     * `store` is `function (array $files, array $document): ?string`. `$files` carries
+     * `codigoGeneracion`, `json` (the receiver's Archivo DTE, exactly as downloaded: store these
+     * bytes), `pdf` (string, or null when it could not be downloaded; the JSON alone confirms) and
+     * `sha256` (of `json`). `$document` is the row of the list. It must RETURN only when the files
+     * are durably stored and THROW if you could not. It may return a short name of the place
+     * (`"s3://contabilidad"`, never a secret) or null to use `where`.
+     *
+     * @param array<string, mixed> $options `store` (required callable), `limit` (default 200, at most
+     *                                      1000), `pageSize` (1 to 100, default 50), `where` (name sent
+     *                                      when `store` returns nothing, default `"store"`), `includePdf`
+     *                                      (default true), `maxFailures` (default 5), `timeoutMs`.
+     * @return array{listed: int, confirmed: int, failed: int, results: array<int, array<string, mixed>>,
+     *               remaining: int|null, firstDeletionAt: string|null, stopped: string, error?: array{code: string, message: string}}
+     *         `stopped` is `complete` (the list was exhausted), `limit`, `too_many_failures`, `fatal`
+     *         (see `error`) or `list_failed` (see `error`). Each result has `state` `confirmed` or
+     *         `failed` (with `step` `download`|`store`|`confirm`, `code` and `message`).
+     * @throws \InvalidArgumentException on a missing `store` or an out-of-range number.
+     */
+    public function storeAndConfirmUnconfirmed(array $options): array
+    {
+        $store = $options['store'] ?? null;
+        if (!is_callable($store)) {
+            throw new \InvalidArgumentException('storeAndConfirmUnconfirmed requires a store callable.');
+        }
+        $options = $this->options($options, ['store', 'limit', 'pageSize', 'where', 'includePdf', 'maxFailures']);
+        $limit = $options['limit'] ?? 200;
+        $pageSize = $options['pageSize'] ?? 50;
+        $maxFailures = $options['maxFailures'] ?? 5;
+        if (!is_int($limit) || $limit < 1 || $limit > 1000) {
+            throw new \InvalidArgumentException('limit must be an integer from 1 through 1000.');
+        }
+        if (!is_int($pageSize) || $pageSize < 1 || $pageSize > 100) {
+            throw new \InvalidArgumentException('pageSize must be an integer from 1 through 100.');
+        }
+        if (!is_int($maxFailures) || $maxFailures < 1) {
+            throw new \InvalidArgumentException('maxFailures must be a positive integer.');
+        }
+        $where = isset($options['where']) && is_string($options['where']) && trim($options['where']) !== '' ? trim($options['where']) : 'store';
+        $includePdf = ($options['includePdf'] ?? true) !== false;
+        $call = isset($options['timeoutMs']) ? ['timeoutMs' => $options['timeoutMs']] : [];
+
+        $results = [];
+        $left = []; // code => borradoEl of the documents NOT confirmed
+        $confirmed = 0;
+        $failed = 0;
+        $listed = 0;
+        $total = null;
+        $cursor = null;
+        $stopped = 'complete';
+        $error = null;
+        $fatalCodes = [
+            FactaError::STORAGE_UNSUPPORTED, FactaError::UNAUTHORIZED, FactaError::INVALID_API_KEY, FactaError::KEY_REVOKED,
+            FactaError::KEY_EXPIRED, FactaError::KEY_INACTIVE, FactaError::FORBIDDEN_SCOPE, FactaError::IP_NOT_ALLOWED,
+            FactaError::ENVIRONMENT_NOT_ALLOWED, FactaError::STORAGE_CONTRACT_INVALID,
+        ];
+
+        while (true) {
+            $pageOptions = ['limit' => min($pageSize, $limit - $listed)] + $call;
+            if ($cursor !== null) {
+                $pageOptions['cursor'] = $cursor;
+            }
+            try {
+                $page = $this->listUnconfirmedDocuments($pageOptions);
+            } catch (FactaError $cause) {
+                $stopped = 'list_failed';
+                $error = ['code' => $cause->getErrorCode(), 'message' => $cause->getMessage()];
+                break;
+            }
+            $total = $page['total'];
+            $documents = $page['documentos'];
+            $last = count($documents) - 1;
+            foreach ($documents as $index => $doc) {
+                $listed++;
+                $row = $this->storeOne($doc, $store, $where, $includePdf, $call, $fatalCodes);
+                $results[] = $row['result'];
+                if ($row['result']['state'] === 'confirmed') {
+                    $confirmed++;
+                } else {
+                    $failed++;
+                    $left[(string) $doc['codigoGeneracion']] = (string) $doc['borradoEl'];
+                }
+                if ($row['fatal']) {
+                    $stopped = 'fatal';
+                    $error = ['code' => (string) ($row['result']['code'] ?? 'unknown'), 'message' => (string) ($row['result']['message'] ?? '')];
+                    break 2;
+                }
+                if ($failed >= $maxFailures) {
+                    $stopped = 'too_many_failures';
+                    break 2;
+                }
+                if ($listed >= $limit) {
+                    $stopped = $page['siguiente'] === null && $index === $last ? 'complete' : 'limit';
+                    break 2;
+                }
+            }
+            if ($page['siguiente'] === null) {
+                break;
+            }
+            $cursor = $page['siguiente'];
+        }
+
+        $waiting = array_values($left);
+        sort($waiting);
+        $report = [
+            'listed' => $listed,
+            'confirmed' => $confirmed,
+            'failed' => $failed,
+            'results' => $results,
+            'remaining' => $total === null ? null : max(0, $total - $confirmed),
+            'firstDeletionAt' => $waiting[0] ?? null,
+            'stopped' => $stopped,
+        ];
+        if ($error !== null) {
+            $report['error'] = $error;
+        }
+        return $report;
+    }
+
+    /**
+     * One document of `storeAndConfirmUnconfirmed()`: download, store, confirm.
+     *
+     * @param array<string, mixed> $doc
+     * @param callable             $store
+     * @param array<string, mixed> $call
+     * @param string[]             $fatalCodes
+     * @return array{result: array<string, mixed>, fatal: bool}
+     */
+    private function storeOne(array $doc, $store, string $defaultWhere, bool $includePdf, array $call, array $fatalCodes): array
+    {
+        $code = (string) $doc['codigoGeneracion'];
+        $fail = static function (string $step, \Throwable $cause) use ($code, $fatalCodes): array {
+            $info = $cause instanceof FactaError
+                ? ['code' => $cause->getErrorCode(), 'message' => $cause->getMessage()]
+                : ['code' => 'store_failed', 'message' => $cause->getMessage()];
+            return [
+                'result' => ['codigoGeneracion' => $code, 'state' => 'failed', 'step' => $step] + $info,
+                'fatal' => $step !== 'store' && in_array($info['code'], $fatalCodes, true),
+            ];
+        };
+        try {
+            $json = $this->downloadDocument($code, 'json', $call)['bytes'];
+        } catch (FactaError $cause) {
+            return $fail('download', $cause);
+        }
+        $pdf = null;
+        if ($includePdf) {
+            try {
+                $pdf = $this->downloadDocument($code, 'pdf', $call)['bytes'];
+            } catch (FactaError $cause) {
+                $pdf = null; // The JSON alone confirms.
+            }
+        }
+        $sha256 = StorageConfirmation::sha256($json);
+        try {
+            $place = $store(['codigoGeneracion' => $code, 'json' => $json, 'pdf' => $pdf, 'sha256' => $sha256], $doc);
+        } catch (\Throwable $cause) {
+            return $fail('store', $cause);
+        }
+        $stored = is_string($place) && trim($place) !== '' ? substr(trim($place), 0, 200) : $defaultWhere;
+        try {
+            $answer = $this->confirmDocumentStorage($code, ['where' => $stored, 'sha256' => $sha256], $call);
+        } catch (FactaError $cause) {
+            return $fail('confirm', $cause);
+        }
+        $result = [
+            'codigoGeneracion' => $code,
+            'state' => 'confirmed',
+            'by' => $answer['por'],
+            'alreadyConfirmed' => $answer['yaConfirmado'],
+            'verificado' => $answer['verificado'],
+            'informado' => $answer['informado'],
+            'where' => $stored,
+        ];
+        if ($pdf === null && $includePdf) {
+            $result['pdfMissing'] = true;
+        }
+        $result['borradoEl'] = $answer['borradoEl'];
+        return ['result' => $result, 'fatal' => false];
+    }
+
+    /**
+     * The capability numbers `GET /v1/storage/status` advertises, cached per client. A server that
+     * predates the route (404/501) has none. A transient failure is not cached.
+     *
+     * @return array<string, mixed>
+     */
+    private function storageCapabilities(): array
+    {
+        if ($this->storageCapabilities === null) {
+            try {
+                $status = $this->callArray('GET', '/v1/storage/status', null, []);
+            } catch (FactaError $cause) {
+                if ($cause->getStatus() === 404 || $cause->getStatus() === 501) {
+                    $this->storageCapabilities = [];
+                    return [];
+                }
+                throw $cause;
+            }
+            $capabilities = $status['capabilities'] ?? null;
+            $this->storageCapabilities = is_array($capabilities) ? $capabilities : [];
+        }
+        return $this->storageCapabilities;
     }
 
     /**

@@ -6,6 +6,17 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
+Additive only: every existing call, type and default keeps working. Follows the TypeScript SDK (Facta-DTE/facta-api-sdk#73).
+
+### Added
+
+- **The temporary copy and the storage confirmation.** Facta keeps an encrypted temporary copy of every sealed document and deletes it **2 days after the document is marked as stored**, or **30 days after sealing** if nobody marks it. New: `listUnconfirmedDocuments()` (`GET /v1/storage/unconfirmed`), `confirmDocumentStorage($code, ['where' => ..., 'sha256' => ...|'bytes' => ...])` (`POST /v1/dte/{code}/storage-confirmation`; throws `storage_unsupported` without posting on a server that does not advertise `capabilities.storageConfirmation`) and `storeAndConfirmUnconfirmed(['store' => callable, ...])`, which downloads each document, hands it to your callable and confirms with the SHA-256 of the stored bytes; it returns a report and never throws for one document.
+- `FactaError::TEMPORARY_COPY_EXPIRED` (410), `NOTHING_TO_REPAIR_FROM` (409) and `STORAGE_HASH_MISMATCH` (422). None is retried.
+- `getStorageStatus()` passes through `capabilities.storageConfirmation` and `sinConfirmar`; `getDocumentCopies()` passes through `confirmado`.
+- `tests/fixtures/openapi.yaml` refreshed with the two routes and the three codes (`ContractParityTest`).
+
+No `/byos` report gate exists in this SDK (BYOS destinations are not implemented yet), so the `=== 1` capability bug fixed in the TypeScript SDK has no counterpart here.
+
 ## [0.2.0-rc.2] - 2026-10-29
 
 **Release candidate** (pre-release tag; the stable release stays at 0.1.0). Additive only: every call, constant, option and return shape of 0.1.0 and 0.2.0-rc.1 keeps working (`tests/BackwardCompatTest.php`). Matches the staging API of 29-Oct-2026.
