@@ -124,7 +124,10 @@ foreach ($result['unknownFields'] ?? [] as $warning) {
 | `invalidate($code, $request)` | `POST .../invalidate` | Sends the sign key. |
 | `registerReturn($code, $request)` | `POST .../return` | Sends the sign key. |
 | `deliverEmail()` / `deliverWhatsApp()` / `getDelivery()` / `waitForDelivery()` | `.../entrega` | Token from `issue(..., ['deliver' => ...])`. |
-| `getStorageStatus()` / `getDocumentCopies()` / `retryDocumentStorage()` | `/v1/storage/...` | Facta Storage coverage and repair. |
+| `getStorageStatus()` / `getDocumentCopies()` / `retryDocumentStorage()` | `/v1/storage/...` | Facta Storage coverage and repair. The status carries `capabilities.storageConfirmation` and `sinConfirmar`; copies carry `confirmado`. |
+| `listUnconfirmedDocuments($options)` | `GET /v1/storage/unconfirmed` | Sealed documents that still depend on Facta's temporary copy, oldest deletion first. `limit`, `cursor`. |
+| `confirmDocumentStorage($code, $confirmation)` | `POST /v1/dte/{code}/storage-confirmation` | Tell Facta you stored the JSON: `['where' => ..., 'sha256' => ...]` or `['where' => ..., 'bytes' => $json]`. |
+| `storeAndConfirmUnconfirmed($options)` | the three above + `.../file` | Drains the list through your `store` callable and returns a report (never throws for one document). |
 | `listCustomers()` ... `searchProducts()` | `/v1/customers`, `/v1/products` | Always through the API, in every catalogue mode. Single records carry `revision` when the company shares its data key. |
 | `createCustomer()` ... `deactivateProduct()` | same | Needs `catalog:write` and the company's «administrar desde el API» switch. `updateCustomer` / `updateProduct` accept `ifMatch` (the `revision` you read). |
 | `listCatalogChanges($since, $options)` | `GET /v1/catalog/changes?since=` | Ids and revisions of what changed; `catalog_cursor_expired` means read everything again. |
@@ -136,6 +139,43 @@ foreach ($result['unknownFields'] ?? [] as $warning) {
 Per-call options accepted by every method: `timeoutMs`, `headers`; the writing ones also
 `idempotencyKey`. An unknown option throws `InvalidArgumentException`, so a typo is not silently
 ignored.
+
+#### The temporary copy and the storage confirmation
+
+Facta keeps an encrypted temporary copy of every sealed document. It is a safety net, not your
+archive: it is deleted **2 days after the document is marked as stored**, or **30 days after
+sealing** if nobody marks it. The company owner is mailed from day one (production only). Once it
+is gone, reads that depended on it answer `temporary_copy_expired` (410), and
+`retryDocumentStorage()` answers `nothing_to_repair_from` (409). Look in your own storage.
+
+Store the JSON where you keep your books and say so. The simplest way is to let the SDK drain the
+list daily:
+
+```php
+$report = $facta->storeAndConfirmUnconfirmed([
+    'where' => 'disco-contabilidad',            // used when store() returns nothing
+    'store' => function (array $files, array $document): ?string {
+        // $files: codigoGeneracion, json (the Archivo DTE, exactly as downloaded), pdf (or null), sha256.
+        // Return only when the bytes are durably stored; throw if they are not.
+        file_put_contents('/books/' . $files['codigoGeneracion'] . '.json', $files['json']);
+        return null;
+    },
+]);
+// $report['stopped'] is 'complete', 'limit', 'too_many_failures', 'fatal' or 'list_failed'.
+// $report['remaining'] and $report['firstDeletionAt'] say what is still waiting and until when.
+```
+
+Or confirm one document yourself, with the hash of the bytes you stored:
+
+```php
+$facta->confirmDocumentStorage($code, ['where' => 'disco-contabilidad', 'bytes' => $json]);
+```
+
+A document issued by the API is checked against the file Facta can rebuild (`verificado => true`; a
+wrong hash is `storage_hash_mismatch` (422) and nothing is recorded). One issued from the app cannot be
+checked and is kept as `informado => true`. Confirming twice is safe (`yaConfirmado => true`). A server that
+does not advertise `capabilities.storageConfirmation` makes `confirmDocumentStorage()` throw
+`storage_unsupported` without posting anything; such a server deletes no temporary copy.
 
 #### Idempotency and retries
 
@@ -335,6 +375,11 @@ calcula impuestos**: eso lo hace el servidor.
   desbloqueo y llegan en una versión posterior. Desde 0.2.0 el catálogo se lee siempre por el API
   (también cifrado y compartido con su llave), `customerId`/`productId` los resuelve el servidor,
   y hay lectura de cambios (`listCatalogChanges`) y webhooks con verificación de firma.
+* **Copia temporal:** Facta guarda una copia temporal cifrada de cada documento sellado y la borra
+  2 días después de que usted lo marque como guardado, o 30 días después de sellarlo si nadie lo
+  marca. Guarde el JSON en su almacenamiento y avise con `confirmDocumentStorage()`, o deje que
+  `storeAndConfirmUnconfirmed()` lo haga cada día con su función `store`. `listUnconfirmedDocuments()`
+  muestra qué falta y cuándo se borra.
 * **Prueba en vivo:** el flujo de GitHub Actions `sdk-live-integration.yml` emite una factura de
   prueba de $0.01 en el ambiente 00 del API de staging en cada pull request listo para
   revisión. Usa los secretos `STAGING_FACTA_API_KEY`, `STAGING_FACTA_SIGN_KEY` y

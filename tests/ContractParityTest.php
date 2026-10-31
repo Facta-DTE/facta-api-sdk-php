@@ -30,6 +30,8 @@ final class ContractParityTest extends TestCase
         'GET /v1/storage/status' => 'getStorageStatus',
         'GET /v1/storage/copies' => 'getDocumentCopies',
         'POST /v1/storage/copies/{codigoGeneracion}/repair' => 'retryDocumentStorage',
+        'GET /v1/storage/unconfirmed' => 'listUnconfirmedDocuments',
+        'POST /v1/dte/{codigoGeneracion}/storage-confirmation' => 'confirmDocumentStorage',
         'POST /v1/dte' => 'issue',
         'GET /v1/dte' => 'listDocuments',
         'POST /v1/dte/prepare' => 'prepare',

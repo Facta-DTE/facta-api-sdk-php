@@ -502,6 +502,111 @@ paths:
         "429": { $ref: "#/components/responses/Techo" }
         "503": { $ref: "#/components/responses/NoDisponible" }
 
+  /v1/storage/unconfirmed:
+    get:
+      tags: [Almacenamiento]
+      operationId: listarDocumentosSinConfirmar
+      summary: Documentos sellados que solo tienen la copia temporal cifrada de Facta
+      description: |
+        **Alcance: `download`.** La empresa y el ambiente salen de la llave.
+
+        **La regla.** Cada documento sellado deja en Facta una *copia temporal
+        cifrada*. Es una red, no su archivo: se borra **30 días después de
+        sellado**, o **2 días después de que se marque como guardado**. Un
+        documento se marca guardado cuando Facta verifica una copia suya
+        (Almacenamiento Facta, o un destino propio que Facta escribió) o cuando
+        usted lo informa con `POST /v1/dte/{codigoGeneracion}/storage-confirmation`
+        (o con el reporte automático del SDK a `/v1/storage/copies/{cg}/byos`).
+        Una copia solo local en un navegador no cuenta.
+
+        Esta ruta lista los que **todavía no están marcados**: el código, el
+        número de control y la fecha en que se borrará la copia temporal. No
+        devuelve contenido, rutas ni datos del receptor. Para guardarlos,
+        descargue cada uno con `GET /v1/dte/{codigoGeneracion}/file`, guárdelo
+        donde corresponda y confírmelo. El dueño de la empresa recibe además un
+        correo con esta misma tabla desde el primer día. Pasada la fecha, las
+        lecturas que dependían de la copia temporal contestan
+        `410 temporary_copy_expired`.
+
+        Orden: primero los que se borran antes. Paginación opaca: pase
+        `siguiente` como `cursor`. Anunciada por
+        `capabilities.storageConfirmation` en `/v1/storage/status`.
+      security: [{ FactaApiKey: [] }]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: cursor
+          in: query
+          required: false
+          description: El `siguiente` de la página anterior.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Documentos que dependen todavía de la copia temporal, los que se borran antes primero.
+          content: { application/json: { schema: { $ref: "#/components/schemas/UnconfirmedDocuments" } } }
+        "400": { description: "`limit` o `cursor` inválidos.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/NoAutorizado" }
+        "403": { $ref: "#/components/responses/Prohibido" }
+        "429": { $ref: "#/components/responses/Techo" }
+        "503": { $ref: "#/components/responses/NoDisponible" }
+
+  /v1/dte/{codigoGeneracion}/storage-confirmation:
+    post:
+      tags: [Almacenamiento]
+      operationId: confirmarAlmacenamiento
+      summary: Informar que ya guardó el JSON de un documento sellado
+      description: |
+        **Alcance: `issue`.** Marca el documento como guardado: la copia temporal
+        cifrada de Facta se borrará **2 días después** en lugar de a los 30 días
+        (ver `GET /v1/storage/unconfirmed`). Úsela cuando guarda en un lugar donde
+        Facta no tiene credenciales (su disco, su base de datos). Si el SDK
+        escribió en un destino sincronizado, el reporte `/v1/storage/copies/{cg}/byos`
+        ya marca el documento y esta llamada no hace falta.
+
+        `sha256` es el hash (64 hexadecimales) del archivo JSON que guardó, tal como
+        lo devolvió `GET /v1/dte/{codigoGeneracion}/file` (el Archivo DTE por
+        defecto, o `raw=true`). **Qué comprueba Facta:** si el documento se emitió
+        por la API, Facta puede rearmar esos mismos archivos y compara; un hash
+        distinto es `422 storage_hash_mismatch` y no se registra nada
+        (`verificado: true` cuando coincide). Si el documento se emitió desde la
+        app, su copia está cifrada con una llave que ningún servidor tiene: Facta
+        no puede comparar, acepta la confirmación y la guarda como **informada**
+        (`verificado: false`, `informado: true`), nunca como verificada. Lo mismo
+        si la copia temporal ya se borró.
+
+        Es idempotente: confirmar de nuevo contesta 200 con `yaConfirmado: true` y
+        conserva la primera fuente. Un código que no es un documento sellado de su
+        empresa y ambiente es 404, igual que uno que no existe.
+      security: [{ FactaApiKey: [] }]
+      parameters:
+        - name: codigoGeneracion
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [donde, sha256]
+              properties:
+                donde: { type: string, minLength: 1, maxLength: 200, description: "Nombre corto del lugar donde lo guardó (\"disco-contabilidad\"). Nunca una ruta con secretos." }
+                sha256: { type: string, pattern: "^[a-fA-F0-9]{64}$", description: "SHA-256 del archivo JSON guardado." }
+      responses:
+        "200":
+          description: Confirmación registrada (o ya registrada).
+          content: { application/json: { schema: { $ref: "#/components/schemas/StorageConfirmation" } } }
+        "400": { description: Cuerpo o código inválidos., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/NoAutorizado" }
+        "403": { $ref: "#/components/responses/Prohibido" }
+        "404": { $ref: "#/components/responses/NoEnElArea" }
+        "422": { description: "`storage_hash_mismatch`: el `sha256` no es el del JSON de ese documento.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { $ref: "#/components/responses/Techo" }
+        "503": { $ref: "#/components/responses/NoDisponible" }
+
   /v1/destinations/{destinationId}/drive-token:
     post:
       tags: [Almacenamiento]
@@ -3223,6 +3328,9 @@ components:
                 - catalog_cursor_expired
                 - webhook_limit_reached
                 - webhook_duplicate
+                - temporary_copy_expired
+                - nothing_to_repair_from
+                - storage_hash_mismatch
                 - service_unavailable
                 - internal_error
             message:
@@ -4780,6 +4888,7 @@ components:
           properties:
             byosCopyReport: { type: integer, description: "Versión de `POST /v1/storage/copies/{codigoGeneracion}/byos`. 2: acepta además `kind: \"invalidation\"`." }
             invalidationFile: { type: integer, description: "1: el almacenamiento administrado guarda el evento de anulación sellado como archivo propio (`kind: invalidation`). Los tipos nuevos se anuncian solo aquí, nunca en `supportedKinds`." }
+            storageConfirmation: { type: integer, description: "1: existen `GET /v1/storage/unconfirmed` y `POST /v1/dte/{codigoGeneracion}/storage-confirmation`, y la copia temporal cifrada se borra a los 30 días (2 tras confirmar). Un servidor sin este campo no borra nada." }
         managed:
           type: object
           required: [configured, ready, state, integration, quotaBytes, usedBytes, reservedBytes, usedBytesTotal, reservedBytesTotal, coveredUntil, accessUntil, bucketState, backupState]
@@ -4802,6 +4911,14 @@ components:
           required: [ready]
           properties:
             ready: { type: boolean }
+        sinConfirmar:
+          type: object
+          nullable: true
+          description: Documentos sellados que solo tienen la copia temporal cifrada de Facta. Ausente en servidores anteriores; `null` si no se pudo calcular.
+          required: [total, primeroSeBorraEl]
+          properties:
+            total: { type: integer, minimum: 0 }
+            primeroSeBorraEl: { type: string, format: date-time, nullable: true, description: La fecha de borrado más próxima. }
         supportedKinds:
           type: array
           description: |
@@ -4826,6 +4943,53 @@ components:
         sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
         issuedDate: { type: string, format: date }
         storedAt: { type: string, format: date-time, nullable: true }
+        confirmado:
+          type: object
+          nullable: true
+          description: "La marca de guardado del documento (no de este archivo): quién y cuándo. `null` si todavía no está marcado. Ausente en servidores anteriores."
+          required: [en, por]
+          properties:
+            en: { type: string, format: date-time }
+            por: { type: string, enum: [facta_managed, facta_byos, sdk_report, api_report, app_report, admin], description: "`facta_*`: Facta verificó la copia. `*_report`: la informó usted o el SDK." }
+
+    UnconfirmedDocuments:
+      type: object
+      required: [capabilityVersion, documentos, total, siguiente]
+      properties:
+        capabilityVersion: { type: integer, const: 1 }
+        documentos:
+          type: array
+          items:
+            type: object
+            required: [codigoGeneracion, numeroControl, tipoDte, fecEmi, selladoEn, borradoEl, diasRestantes, copias]
+            properties:
+              codigoGeneracion: { type: string, format: uuid }
+              numeroControl: { type: string }
+              tipoDte: { type: string }
+              fecEmi: { type: string, format: date, nullable: true }
+              selladoEn: { type: string, format: date-time }
+              borradoEl: { type: string, format: date-time, description: Cuándo se borra la copia temporal si nadie la confirma. }
+              diasRestantes: { type: integer, minimum: 0 }
+              copias:
+                type: object
+                required: [facta, byos]
+                properties:
+                  facta: { type: string, enum: [stored, pending, none], description: "Estado del JSON en Almacenamiento Facta. `stored` ya cuenta como guardado, así que normalmente no aparece aquí." }
+                  byos: { type: integer, minimum: 0, description: Copias informadas (sin verificar) en destinos propios. }
+        total: { type: integer, minimum: 0, description: Todos los que faltan por confirmar, no solo esta página. }
+        siguiente: { type: string, nullable: true, description: Cursor opaco para la página siguiente; null si no hay más. }
+
+    StorageConfirmation:
+      type: object
+      required: [codigoGeneracion, confirmado, por, yaConfirmado, verificado, informado, borradoEl]
+      properties:
+        codigoGeneracion: { type: string, format: uuid }
+        confirmado: { type: boolean, const: true }
+        por: { type: string, enum: [facta_managed, facta_byos, sdk_report, api_report, app_report, admin], description: La primera fuente que marcó el documento; se conserva. }
+        yaConfirmado: { type: boolean, description: Verdadero si ya estaba marcado antes de esta llamada. }
+        verificado: { type: boolean, description: Verdadero solo si Facta comparó el `sha256` con el JSON que puede rearmar. }
+        informado: { type: boolean, description: Verdadero si es una afirmación que Facta no pudo comprobar (copia de la app, o copia temporal ya borrada). }
+        borradoEl: { type: string, format: date-time, nullable: true, description: Cuándo se borra la copia temporal; null si ya se borró. }
 
     ManagedDocumentCopies:
       type: object
@@ -5404,6 +5568,18 @@ x-facta-errores:
     status: 409
     cuando: Esa dirección ya está registrada en esta llave.
     hacer: Cambie los eventos del webhook que ya existe con `PATCH /v1/webhooks/{id}`.
+  temporary_copy_expired:
+    status: 410
+    cuando: "Pidió un documento sellado cuya copia temporal cifrada ya se borró (30 días después de sellado, o 2 días después de confirmar que lo guardó) y Facta no tiene otra copia (Almacenamiento Facta)."
+    hacer: "Búsquelo en su propio almacenamiento: es el JSON que guardó. Para que no vuelva a pasar, confirme cada documento (`POST /v1/dte/{codigoGeneracion}/storage-confirmation`) y revise `GET /v1/storage/unconfirmed` cada día."
+  nothing_to_repair_from:
+    status: 409
+    cuando: "`POST /v1/storage/copies/{codigoGeneracion}/repair` sobre un documento cuya copia temporal ya se borró: no queda de dónde reescribir."
+    hacer: Recupere el JSON de su propio almacenamiento. Esta ruta solo repara copias de Facta mientras la copia temporal existe.
+  storage_hash_mismatch:
+    status: 422
+    cuando: "El `sha256` de `POST /v1/dte/{codigoGeneracion}/storage-confirmation` no es el del JSON de ese documento (archivo cortado, otro documento, bytes distintos)."
+    hacer: Descargue otra vez con `GET /v1/dte/{codigoGeneracion}/file`, guarde esos bytes y calcule el hash sobre ellos. No se registró nada.
   service_unavailable:
     status: 503
     cuando: Algo nuestro no contestó — la base, el registro de peticiones, el de idempotencia.

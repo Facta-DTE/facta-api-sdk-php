@@ -85,6 +85,12 @@ class FactaError extends \Exception
     public const SERVICE_UNAVAILABLE = 'service_unavailable';
     public const NO_STORAGE_DESTINATION = 'no_storage_destination';
     public const STORAGE_UNSUPPORTED = 'storage_unsupported';
+    /** HTTP 410: the temporary encrypted copy was deleted (2 days after the document was marked stored, or 30 days after sealing). Look in your own storage. */
+    public const TEMPORARY_COPY_EXPIRED = 'temporary_copy_expired';
+    /** HTTP 409 from `retryDocumentStorage()`: the temporary copy is gone, so Facta has nothing to rewrite from. */
+    public const NOTHING_TO_REPAIR_FROM = 'nothing_to_repair_from';
+    /** HTTP 422: the `sha256` of a storage confirmation is not the one of that document's JSON; nothing was recorded. */
+    public const STORAGE_HASH_MISMATCH = 'storage_hash_mismatch';
     public const STORAGE_UNAVAILABLE = 'storage_unavailable';
     public const STORAGE_CONTRACT_INVALID = 'storage_contract_invalid';
     public const ENTREGA_VENCIDA = 'entrega_vencida';
