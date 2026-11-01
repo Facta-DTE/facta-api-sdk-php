@@ -98,6 +98,8 @@ foreach ($result['unknownFields'] ?? [] as $warning) {
 }
 ```
 
+`Facta::PRODUCTION_BASE_URL` names the production endpoint and is the same value as the backward-compatible `Facta::DEFAULT_BASE_URL`. The client uses production by default; set `baseUrl` to `Facta::STAGING_BASE_URL` to opt in to staging, or provide a custom absolute HTTP(S) URL.
+
 * `montoDescu` is the discount of one line in money, in the same VAT basis as `precioUni`.
 * `pagos` takes 1 to 10 rows (01, 03, 11, 14), not together with `formaPago`, not on 05/06, not on credit.
   `Pago` is optional: plain arrays work too.
