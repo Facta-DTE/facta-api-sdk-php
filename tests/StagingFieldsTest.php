@@ -110,9 +110,14 @@ final class StagingFieldsTest extends ClientCase
     {
         $this->assertSame('https://eobxzotnqzgtpuqvmpkc.supabase.co/functions/v1/api-v1', Facta::STAGING_BASE_URL);
         $this->assertSame('https://hcnvknpsbadplnfcflxx.supabase.co/functions/v1/api-v1', Facta::DEFAULT_BASE_URL);
+        $this->assertSame(Facta::DEFAULT_BASE_URL, Facta::PRODUCTION_BASE_URL);
         $fake = new FakeTransport([self::ok(self::SEALED)]);
         $this->client($fake, ['baseUrl' => Facta::STAGING_BASE_URL])->issue(['tipoDte' => '01', 'items' => []]);
         $this->assertStringStartsWith(Facta::STAGING_BASE_URL . '/v1/dte', self::request($fake)['url']);
+
+        $custom = new FakeTransport([self::ok(self::SEALED)]);
+        $this->client($custom, ['baseUrl' => 'https://custom.example.test/api-v1'])->issue(['tipoDte' => '01', 'items' => []]);
+        $this->assertStringStartsWith('https://custom.example.test/api-v1/v1/dte', self::request($custom)['url']);
     }
 
     public function testHeaderParser(): void

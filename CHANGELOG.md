@@ -6,6 +6,10 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.2.0-rc.3] - 2026-11-01
+
 Additive only: every existing call, type and default keeps working. Follows the TypeScript SDK (Facta-DTE/facta-api-sdk#73).
 
 ### Added
@@ -16,6 +20,8 @@ Additive only: every existing call, type and default keeps working. Follows the 
 - `tests/fixtures/openapi.yaml` refreshed with the two routes and the three codes (`ContractParityTest`).
 
 No `/byos` report gate exists in this SDK (BYOS destinations are not implemented yet), so the `=== 1` capability bug fixed in the TypeScript SDK has no counterpart here.
+
+- `Facta::PRODUCTION_BASE_URL` names the existing production endpoint and aliases `Facta::DEFAULT_BASE_URL`; the production default and opt-in `Facta::STAGING_BASE_URL` remain unchanged.
 
 ## [0.2.0-rc.2] - 2026-10-29
 

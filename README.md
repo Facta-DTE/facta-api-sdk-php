@@ -4,7 +4,7 @@ PHP client for the [Facta DTE](https://factadte.com) API, El Salvador's electron
 invoicing service. It talks to the API over HTTPS; **it never signs a document and never
 computes tax**. Signing, totals, IVA, correlatives and validation happen on the server.
 
-> **Status: tier 1 (0.2.0-rc.2 is a release candidate; 0.1.0 is the stable release).** Everything that needs only
+> **Status: tier 1 (0.2.0-rc.3 is a release candidate; 0.1.0 is the stable release).** Everything that needs only
 > HTTP is implemented: issuing, prepare/sign, queries, downloads, invalidation, returns,
 > delivery, managed storage, the catalog, the catalogue changes feed and webhooks (see
 > [Methods](#methods)). The catalogue is always read through the API, also when the company
@@ -97,6 +97,8 @@ foreach ($result['unknownFields'] ?? [] as $warning) {
     error_log('Facta ignored ' . $warning['campo'] . ' (did you mean ' . ($warning['sugerencia'] ?? '?') . ')');
 }
 ```
+
+`Facta::PRODUCTION_BASE_URL` names the production endpoint and is the same value as the backward-compatible `Facta::DEFAULT_BASE_URL`. The client uses production by default; set `baseUrl` to `Facta::STAGING_BASE_URL` to opt in to staging, or provide a custom absolute HTTP(S) URL.
 
 * `montoDescu` is the discount of one line in money, in the same VAT basis as `precioUni`.
 * `pagos` takes 1 to 10 rows (01, 03, 11, 14), not together with `formaPago`, not on 05/06, not on credit.

@@ -38,9 +38,12 @@ use Facta\Api\Support\Warnings;
  */
 final class Facta
 {
-    public const VERSION = '0.2.0-rc.2';
+    public const VERSION = '0.2.0-rc.3';
 
     public const DEFAULT_BASE_URL = 'https://hcnvknpsbadplnfcflxx.supabase.co/functions/v1/api-v1';
+
+    /** The public production API endpoint (also the default). */
+    public const PRODUCTION_BASE_URL = self::DEFAULT_BASE_URL;
 
     /**
      * The staging API (environment 00 only; keys `facta_test_` created in staging.factadte.com). The client
