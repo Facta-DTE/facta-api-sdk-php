@@ -38,7 +38,7 @@ use Facta\Api\Support\Warnings;
  */
 final class Facta
 {
-    public const VERSION = '0.2.0-rc.2';
+    public const VERSION = '0.2.0-rc.3';
 
     public const DEFAULT_BASE_URL = 'https://hcnvknpsbadplnfcflxx.supabase.co/functions/v1/api-v1';
 
