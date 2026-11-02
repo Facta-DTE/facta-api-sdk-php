@@ -240,7 +240,9 @@ final class Facta
      * @param array<string, mixed> $options Per-call options: `timeoutMs`, `headers`.
      * @return array<string, mixed> The decoded answer: `ok`, `version`, `ambiente`, `emisor`,
      *                              `llave` (`alcances`, `tiposDte`, `catalogMode`, ...), `firma`,
-     *                              `sincronizacion`, `limites`, and `region` when advertised.
+     *                              `sincronizacion`, `limites`, `capabilities` (`descuentoGlobal`,
+     *                              `fseIncomeWithholdingPerLine`, ... true when the server supports
+     *                              them), and `region` when advertised.
      * @throws FactaError
      */
     public function status(array $options = []): array

@@ -74,6 +74,7 @@ object, and `new \stdClass()` is an empty object `{}`.
 ### Discounts, several payments, VAT class and warnings
 
 ```php
+use Facta\Api\DescuentoGlobal;
 use Facta\Api\Facta;
 use Facta\Api\Pago;
 use Facta\Api\SaleType;
@@ -90,6 +91,7 @@ $result = $facta->issue([
         ['descripcion' => 'Libro', 'cantidad' => 1, 'precioUni' => 10, 'tipoVenta' => SaleType::EXENTA],
     ],
     'pagos' => [new Pago('01', 25), new Pago('02', 40, 'VOUCHER-0042')],   // must add up to the total, to the cent
+    'descuentoGlobal' => DescuentoGlobal::porcentaje(10),   // the whole sale; 01, 03, 11, 14
     'aplicarRetencionIva' => true,    // 01 and 03 only; never automatic
     // 'aplicarPercepcionIva' => true // 03 only
 ]);
@@ -104,6 +106,21 @@ foreach ($result['unknownFields'] ?? [] as $warning) {
 * `pagos` takes 1 to 10 rows (01, 03, 11, 14), not together with `formaPago`, not on 05/06, not on credit.
   `Pago` is optional: plain arrays work too.
 * `tipoVenta` (`gravada` default, `exenta`, `no_sujeta`) is yours to choose and valid in 01, 03, 05, 06.
+* `descuentoGlobal` is the discount of the **whole sale** (01, 03, 11, 14), after the line discounts:
+  `DescuentoGlobal::porcentaje(10)` (10 %, also `resumen.porcentajeDescuento`) or `DescuentoGlobal::monto(12.50)`
+  (dollars, in the same VAT basis as `precioUni`: VAT included on 01, net on 03 and 11), or the plain array
+  `['modo' => 'monto'|'porcentaje', 'valor' => ...]`. Facta spreads it over the sale classes; VAT, withholdings,
+  `totalPagar` and the sum of `pagos` are computed on the discounted amounts. On a note (05, 06) it is
+  `global_discount_not_supported`; above the subtotal it is `invalid_request` (`details.field`, `details.subtotal`).
+  `status()['capabilities']['descuentoGlobal']` says whether the server reads it (an older one ignores it and
+  warns `campo_desconocido`).
+* **FSE (14) income withholding on some lines only:** send `'incomeWithholding' => ['mode' => 'per_line']`
+  instead of `aplicarReteRenta`, and an explicit boolean `applyIncomeWithholding` on **every** line; the rate
+  applies to the sum of the marked lines after their discounts. Available when
+  `status()['capabilities']['fseIncomeWithholdingPerLine']` is true. The two forms exclude each other; the server
+  explains each refusal with one of the `fse_withholding_*` codes (`FactaError::FSE_WITHHOLDING_*`). The SDK does
+  not pre-check them. The treatment of an independent purchase of goods mixed with services is still pending
+  DGII confirmation: confirm it with your accountant.
 * **Unknown fields are always a warning, never an error.** A request field Facta DTE does not know is ignored and
   is not part of the document; the answer says so in `advertencias` (`campo_desconocido`, with `campo` and
   `sugerencia`). The SDK also lists them in `unknownFields` and parses the `Facta-Warning` header into
