@@ -49,6 +49,12 @@ class FactaError extends \Exception
     public const FSE_WITHHOLDING_MODE_REQUIRED = 'fse_withholding_mode_required';
     /** HTTP 400: `descuentoGlobal` on a credit (05) or debit (06) note; their amounts come from the corrected document. No correlative spent. */
     public const GLOBAL_DISCOUNT_NOT_SUPPORTED = 'global_discount_not_supported';
+    /** HTTP 400: a non-taxed line (`items[].noGravado`) on a document with no sale line above zero. Also raised locally (status 0). No correlative spent. */
+    public const NON_TAXED_REQUIRES_SALE_LINE = 'non_taxed_requires_sale_line';
+    /** HTTP 400: a non-taxed line on a type whose schema has no `noGravado` (14; also 07, 15). Also raised locally (status 0). No correlative spent. */
+    public const NON_TAXED_NOT_SUPPORTED = 'non_taxed_not_supported';
+    /** HTTP 400: the non-taxed credits leave the total to pay below zero. Only the server knows the total. No correlative spent. */
+    public const NON_TAXED_TOTAL_NEGATIVE = 'non_taxed_total_negative';
     public const NOT_FOUND = 'not_found';
     public const METHOD_NOT_ALLOWED = 'method_not_allowed';
     public const NOT_SEALED = 'not_sealed';

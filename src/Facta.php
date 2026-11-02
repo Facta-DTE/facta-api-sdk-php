@@ -13,6 +13,7 @@ use Facta\Api\Support\Catalog;
 use Facta\Api\Support\Delivery;
 use Facta\Api\Support\Diagnostics;
 use Facta\Api\Support\ManagedStorage;
+use Facta\Api\Support\NonTaxedLines;
 use Facta\Api\Support\Redactor;
 use Facta\Api\Support\StorageConfirmation;
 use Facta\Api\Support\Warnings;
@@ -241,7 +242,7 @@ final class Facta
      * @return array<string, mixed> The decoded answer: `ok`, `version`, `ambiente`, `emisor`,
      *                              `llave` (`alcances`, `tiposDte`, `catalogMode`, ...), `firma`,
      *                              `sincronizacion`, `limites`, `capabilities` (`descuentoGlobal`,
-     *                              `fseIncomeWithholdingPerLine`, ... true when the server supports
+     *                              `fseIncomeWithholdingPerLine`, `noGravado`, ... true when the server supports
      *                              them), and `region` when advertised.
      * @throws FactaError
      */
@@ -372,6 +373,7 @@ final class Facta
     public function issue(array $request, array $options = []): array
     {
         $options = $this->options($options, ['idempotencyKey', 'deliver', 'headers', 'timeoutMs']);
+        NonTaxedLines::check($request);
         $deliver = $options['deliver'] ?? null;
         unset($options['deliver']);
 
@@ -398,6 +400,7 @@ final class Facta
     public function prepare(array $request, array $options = []): array
     {
         $options = $this->options($options, ['idempotencyKey', 'headers', 'timeoutMs']);
+        NonTaxedLines::check($request);
         $raw = $this->execute('POST', '/v1/dte/prepare', $request, $options, false);
         $warningHeader = $this->lastWarningHeader;
         if (!($raw instanceof \stdClass)) {
@@ -1732,6 +1735,7 @@ final class Facta
     {
         $id = Catalog::requireId($draftId, 'draft');
         $options = $this->options($options, ['idempotencyKey', 'deliver']);
+        NonTaxedLines::check($request);
         $deliver = $options['deliver'] ?? null;
         unset($options['deliver']);
         $body = self::withDelivery($request, $deliver);
@@ -1747,6 +1751,7 @@ final class Facta
      */
     private static function draftBody(array $request): array
     {
+        NonTaxedLines::check($request);
         if (isset($request['referencia']) && (!is_string($request['referencia']) || $request['referencia'] === '' || strlen($request['referencia']) > 64)) {
             throw new \InvalidArgumentException('referencia must be a text of 1 to 64 characters.');
         }

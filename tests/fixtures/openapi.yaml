@@ -3500,6 +3500,9 @@ components:
                 - fse_withholding_mode_invalid
                 - fse_withholding_mode_required
                 - global_discount_not_supported
+                - non_taxed_requires_sale_line
+                - non_taxed_not_supported
+                - non_taxed_total_negative
                 - fse_withholding_not_supported
                 - fse_withholding_selection_invalid
                 - fse_withholding_selection_required
@@ -4001,6 +4004,28 @@ components:
         enviar `descripcion` y `precioUni`.
       anyOf:
         - required: [descripcion, precioUni]
+
+    ItemNoGravado:
+      type: object
+      additionalProperties: false
+      required: [descripcion, noGravado, tipoItem]
+      description: |
+        Cargo (positivo) o abono (negativo) que no afecta la base imponible
+        (Manual Funcional v2.0 §XII), como línea propia, en 01, 03, 05, 06 y
+        11. Facta la escribe con cantidad 1, `uniMedida` 99, `precioUni` 0 y
+        las ventas y tributos en 0; solo suma a `resumen.totalNoGravado` y a
+        `totalPagar`. No lleva `cantidad`, `precioUni`, `montoDescu`,
+        `tipoVenta` ni `productId` (`400 invalid_request`). Necesita al menos
+        una línea de venta con valor (`non_taxed_requires_sale_line`); en 14 es
+        `non_taxed_not_supported`. En una exportación, todo lo vendido es una
+        línea de venta (gravada al 0 %); solo un cargo que no es venta va como
+        `noGravado`.
+      properties:
+        descripcion: { type: string }
+        noGravado: { type: number, not: { const: 0 }, description: Distinto de cero, con 8 decimales como máximo. }
+        tipoItem: { type: integer, enum: [1, 2, 3] }
+        codigo: { type: string, nullable: true }
+        numeroDocumento: { type: string }
         - required: [productId]
       properties:
         productId:
@@ -4280,7 +4305,7 @@ components:
           type: array
           minItems: 1
           maxItems: 2000
-          items: { $ref: "#/components/schemas/Item" }
+          items: { oneOf: [{ $ref: "#/components/schemas/Item" }, { $ref: "#/components/schemas/ItemNoGravado" }] }
         documentosRelacionados:
           type: array
           minItems: 1
@@ -4949,6 +4974,7 @@ components:
         totalIva: { type: number }
         montoTotalOperacion: { type: number }
         totalPagar: { type: number }
+        totalNoGravado: { type: number, description: 'Suma de las líneas `noGravado` (01, 03, 05, 06, 11), ya incluida en `totalPagar`; 0 si no hay.' }
         totalLetras: { type: string, example: VEINTIOCHO 25/100 DOLARES }
         reteRenta:
           type: number
@@ -5560,6 +5586,7 @@ components:
           properties:
             fseIncomeWithholdingPerLine: { type: boolean, const: true, description: El servidor admite la selección explícita de retención FSE por línea. }
             descuentoGlobal: { type: boolean, const: true, description: "El servidor lee `descuentoGlobal` en 01, 03, 11 y 14. Sin esta marca, una API anterior lo ignora (y lo advierte como campo desconocido)." }
+            noGravado: { type: boolean, const: true, description: "El servidor acepta líneas `noGravado` (cargos o abonos que no afectan la base imponible) en 01, 03, 05, 06 y 11." }
         region:
           type: string
           nullable: true
@@ -5929,6 +5956,18 @@ x-facta-errores:
     status: 400
     cuando: Se mandó `descuentoGlobal` en una nota de crédito (05) o de débito (06).
     hacer: 'Los montos de una nota salen del documento que corrige: ajuste el valor de las líneas y quite `descuentoGlobal`. No gasta correlativo.'
+  non_taxed_requires_sale_line:
+    status: 400
+    cuando: El documento trae una línea `noGravado` pero ninguna línea de venta (gravada, exenta o no sujeta) con valor mayor que cero (Manual Funcional §XII).
+    hacer: 'Agregue al menos una línea de venta con valor. No gasta correlativo.'
+  non_taxed_not_supported:
+    status: 400
+    cuando: Se mandó una línea `noGravado` en un tipo cuyo esquema no la tiene (14; también 07 y 15).
+    hacer: 'Quite la línea no gravada. Solo 01, 03, 05, 06 y 11 la admiten. No gasta correlativo.'
+  non_taxed_total_negative:
+    status: 400
+    cuando: Los abonos no gravados (`noGravado` negativo) dejan el total a pagar por debajo de cero.
+    hacer: 'Reduzca el abono o emita una nota de crédito. No gasta correlativo.'
   validation_failed:
     status: 422
     cuando: El documento no cumple el esquema oficial del Ministerio de Hacienda, un código no es del catálogo (`formaPago`, `pagos[].codigo`, `exportacion.recintoFiscal`, `.tipoRegimen`, `.regimen`), o `pagos` no suma el total o se manda en una venta a crédito (`condicionOperacion` 2).
