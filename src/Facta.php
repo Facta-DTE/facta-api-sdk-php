@@ -1594,15 +1594,24 @@ final class Facta
      * `idempotency_key_reuse`. `drafts_not_ready` (409) means the owner has not opened Facta with their
      * vault since the company began sharing its data key: ask them to open it once.
      *
+     * A request field Facta DTE does not know is a warning, never an error, exactly as in
+     * {@see Facta::issue()}: the answer carries `advertencias` (`campo_desconocido`) and the SDK adds
+     * `unknownFields` and `factaWarning`, only when there is something to report. **The ignored field is
+     * NOT part of the draft** (the draft keeps the resolved request), so fix it and save a new version
+     * with {@see Facta::updateDraft()} before it is issued. A replay with the same `idempotencyKey`
+     * reports them again; a refused draft carries them in {@see FactaError::getUnknownFields()}.
+     *
      * @param array<string, mixed> $request
      * @param array<string, mixed> $options `idempotencyKey`, `timeoutMs`, `headers`.
-     * @return array<string, mixed> `borradorId`, `estado`, `version`, `totales`.
+     * @return array<string, mixed> `borradorId`, `estado`, `version`, `totales`, and `advertencias`,
+     *         `unknownFields`, `factaWarning` when a field was ignored.
      * @throws FactaError
      */
     public function createDraft(array $request, array $options = []): array
     {
         $options = $this->options($options, ['idempotencyKey']);
-        return $this->draftOf($this->callArray('POST', '/v1/drafts', self::draftBody($request), $options));
+        $draft = $this->draftOf($this->callArray('POST', '/v1/drafts', self::draftBody($request), $options));
+        return Warnings::attach($draft, $this->lastWarningHeader);
     }
 
     /**
@@ -1675,7 +1684,8 @@ final class Facta
     /**
      * Saves a new version of a draft that is still pending. `$version` is the one you read; it travels
      * as `If-Match` (`version_mismatch`, 409, when stale). Refused while a person has the draft open in
-     * the app, while it is being issued, or once resolved.
+     * the app, while it is being issued, or once resolved. Unknown fields are warned exactly as in
+     * {@see Facta::createDraft()} (`unknownFields`, `factaWarning`) and are not part of the new version.
      *
      * @param array<string, mixed> $request Same shape as {@see Facta::createDraft()}.
      * @param array<string, mixed> $options
@@ -1689,7 +1699,8 @@ final class Facta
         $headers = isset($options['headers']) && is_array($options['headers']) ? $options['headers'] : [];
         $headers['If-Match'] = (string) self::draftVersion($version);
         $options['headers'] = $headers;
-        return $this->draftOf($this->callArray('PUT', '/v1/drafts/' . rawurlencode($id), self::draftBody($request), $options));
+        $draft = $this->draftOf($this->callArray('PUT', '/v1/drafts/' . rawurlencode($id), self::draftBody($request), $options));
+        return Warnings::attach($draft, $this->lastWarningHeader);
     }
 
     /**

@@ -124,7 +124,7 @@ foreach ($result['unknownFields'] ?? [] as $warning) {
 * **Unknown fields are always a warning, never an error.** A request field Facta DTE does not know is ignored and
   is not part of the document; the answer says so in `advertencias` (`campo_desconocido`, with `campo` and
   `sugerencia`). The SDK also lists them in `unknownFields` and parses the `Facta-Warning` header into
-  `factaWarning` (`['code' => ..., 'count' => ...]`), on `issue()`, `prepare()`, `sign()` and `issueDraft()`, only when
+  `factaWarning` (`['code' => ..., 'count' => ...]`), on `issue()`, `prepare()`, `sign()`, `createDraft()`, `updateDraft()` and `issueDraft()`, only when
   there is something to report. On a failure, `FactaError::getUnknownFields()` and `getFactaWarning()` read them.
   Check the first answer of your integration: an ignored field is a discount or a payment the document does not carry.
 
@@ -281,6 +281,10 @@ $facta->updateDraft($draft['borradorId'], $draft['version'], $request);         
 $issued = $facta->issueDraft($draft['borradorId'], $draft['version'], $request, ['idempotencyKey' => 'issue-77']);
 $facta->cancelDraft($draft['borradorId']);                // only while pending and closed
 ```
+
+Drafts warn about unknown fields like `issue()` does (`unknownFields`, `factaWarning`, also on a replay with the same
+`idempotencyKey` and on `updateDraft()`), but **the ignored field is not stored in the draft**: the draft keeps the
+request as the server resolved it. Fix the field and save a new version with `updateDraft()` before it is issued.
 
 `drafts_not_ready` (409): the owner has not opened Facta with their vault since the company began sharing
 its data key; ask them to open it once and repeat. `version_mismatch`, `draft_claimed`, `draft_issuing`,
