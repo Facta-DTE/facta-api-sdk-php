@@ -2140,7 +2140,9 @@ final class Facta
             try {
                 return $this->attempt($method, $path, $headers, $payload, $timeoutMs, $binary);
             } catch (FactaError $error) {
-                if (!in_array($error->getErrorCode(), self::RETRYABLE, true)) {
+                // A signed-but-not-transmitted 503 is replayed as-is under the same key: repeating it
+                // cannot help, and the caller must move to retryDocument() instead.
+                if (!in_array($error->getErrorCode(), self::RETRYABLE, true) || $error->isSignedNotTransmitted()) {
                     throw $error;
                 }
                 $last = $error;

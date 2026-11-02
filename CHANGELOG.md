@@ -6,7 +6,7 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
-Additive only: every existing call, constant and return shape keeps working. Matches the staging API contract of 2-Nov-2026 (`tests/fixtures/openapi.yaml` refreshed).
+Every existing call, constant and return shape keeps working; the one behaviour change is under «Changed». Matches the staging API contract of 2-Nov-2026 (`tests/fixtures/openapi.yaml` refreshed).
 
 ### Added
 
@@ -14,7 +14,12 @@ Additive only: every existing call, constant and return shape keeps working. Mat
 - **Global discount.** `descuentoGlobal` (`['modo' => 'monto'|'porcentaje', 'valor' => ...]`) travels untouched on `issue()`, `prepare()`, `createDraft()`, `updateDraft()` and `issueDraft()` for 01, 03, 11 and 14; the new `DescuentoGlobal` value object (`DescuentoGlobal::monto()`, `::porcentaje()`) checks the shape it can check without the server, plain arrays work too. On 05/06 the server answers `global_discount_not_supported`. `status()` passes through `capabilities.descuentoGlobal`.
 - **FSE per-line income withholding** documented and pinned: `incomeWithholding: ['mode' => 'per_line']` plus `items[].applyIncomeWithholding` travel untouched, `status()` passes through `capabilities.fseIncomeWithholdingPerLine`, and every `fse_withholding_*` refusal is a named, final `FactaError` code. The SDK does not pre-check the selection; the server owns the rules.
 - **Drafts warn about unknown fields.** `createDraft()` (create and idempotent replay) and `updateDraft()` results gain `unknownFields` and `factaWarning` when the server reports `campo_desconocido` in `advertencias` / `Facta-Warning`, exactly as `issue()` already did. The ignored field is not stored in the draft: fix it and save a new version. A refused draft already exposed them through `FactaError::getUnknownFields()` / `getFactaWarning()`.
+- **Signed but not transmitted.** `FactaError::isSignedNotTransmitted()` and `signedNotTransmitted()` read the `503 service_unavailable` the server answers when a document was signed (number spent) but not sent to Hacienda: `codigoGeneracion`, `numeroControl`, `estado` (`firmado_sin_transmitir`), `confirmado`, `siguientePaso`. Do not issue again: finish it with `retryDocument()`. `spent()` also returns the pair for this answer.
 - Error codes `document_not_retryable` and `retry_in_progress` (409), the six `fse_withholding_*` codes (400) and `global_discount_not_supported` (400), as `FactaError` constants.
+
+### Changed
+
+- The SDK no longer repeats a signed-but-not-transmitted `503`: under the same `Idempotency-Key` the server replays that answer, so the extra attempts only delayed the error. Every other `service_unavailable` is still retried as before.
 
 ## [0.2.0-rc.3] - 2026-11-01
 

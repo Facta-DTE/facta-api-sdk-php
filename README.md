@@ -324,6 +324,29 @@ timeout), up to `maxRetries` extra attempts, waiting for `Retry-After` when the 
 Every attempt resends the same bytes with the same `Idempotency-Key`, so a retry cannot issue twice.
 When the attempts run out the last error is thrown; any other code is final.
 
+**Signed but not transmitted.** One `503 service_unavailable` is different: the document IS (or may be) signed
+and its control number spent, but it was not sent to Hacienda from that request. `isSignedNotTransmitted()` is
+true and `signedNotTransmitted()` returns `codigoGeneracion`, `numeroControl`, `estado`
+(`firmado_sin_transmitir`), `confirmado` and `siguientePaso`. **Do not issue again**, with this key or another:
+it would be a second sale. The same request with the same `Idempotency-Key` only replays that answer, so the SDK
+does not repeat it. Finish the document with the retry route:
+
+```php
+try {
+    $result = $facta->issue($request, ['idempotencyKey' => 'order-1234']);
+} catch (FactaError $e) {
+    $pending = $e->signedNotTransmitted();
+    if ($pending === null) {
+        throw $e;
+    }
+    // Keep $pending['codigoGeneracion'] with the order, then (now or later):
+    $result = $facta->retryDocument($pending['codigoGeneracion']);   // same signed bytes; 'sellado' or 'pendiente'
+}
+```
+
+`listPendingDocuments()` lists every document in that state; look there before issuing again after any uncertain
+answer (a `contingencia`, a timeout, a `503`).
+
 Secrets (API key, sign key, unlock key) are removed from messages and `details`.
 
 ### Old servers and TLS
@@ -411,6 +434,15 @@ calcula impuestos**: eso lo hace el servidor.
   `STAGING_FACTA_UNLOCK_KEY` (opcionales: `STAGING_FACTA_DTE_FIXTURES_JSON` y
   `STAGING_FACTA_DELIVERY_EMAIL`) del entorno `staging-live-test`; si falta uno, la ejecución
   falla en lugar de pasar en silencio.
+* **Descuento global y retención de renta por línea (FSE):** `descuentoGlobal` (`DescuentoGlobal::monto()` o
+  `::porcentaje()`, o el arreglo `['modo' => ..., 'valor' => ...]`) en 01, 03, 11 y 14; en 05/06 el servidor
+  responde `global_discount_not_supported`. En la FSE, `incomeWithholding => ['mode' => 'per_line']` con
+  `applyIncomeWithholding` en cada línea. `status()['capabilities']` dice si el servidor los admite.
+* **Borradores:** `createDraft()` y `updateDraft()` también avisan de campos desconocidos (`unknownFields`,
+  `factaWarning`). El campo ignorado no queda en el borrador: corríjalo y guarde una versión nueva.
+* **Firmado sin transmitir:** si `FactaError::isSignedNotTransmitted()` es verdadero, el documento ya está firmado
+  y su correlativo gastado. **No emita otro**: termine ese documento con
+  `retryDocument($e->signedNotTransmitted()['codigoGeneracion'])`. `listPendingDocuments()` lista los pendientes.
 * Si el servidor tiene certificados desactualizados, indique la ruta de un paquete de
   certificados en la opción `caBundle`. La verificación TLS nunca se desactiva.
 

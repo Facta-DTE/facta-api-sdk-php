@@ -207,7 +207,10 @@ class FactaError extends \Exception
 
     /**
      * The correlative a rejection already burned, or null. The corrected
-     * document may reuse that number and generation code.
+     * document may reuse that number and generation code. Also set on a
+     * signed-but-not-transmitted answer ({@see FactaError::isSignedNotTransmitted()}),
+     * where the number belongs to a document owed to Hacienda: finish it with
+     * {@see Facta::retryDocument()}, never reuse it in a new request.
      *
      * @return array{codigoGeneracion: string, numeroControl: string}|null
      */
@@ -219,6 +222,47 @@ class FactaError extends \Exception
             return null;
         }
         return ['codigoGeneracion' => $cg, 'numeroControl' => $nc];
+    }
+
+    /**
+     * True for the `503 service_unavailable` the server answers when the document IS (or may be) signed
+     * and its control number spent, but it was not transmitted to Hacienda from that request
+     * (`details.estado` "firmado_sin_transmitir").
+     *
+     * **Do not issue again** (with this or another `Idempotency-Key`): that would be a second sale. Repeating
+     * the same request with the same key only replays this answer. Finish THIS document with
+     * {@see Facta::retryDocument()} using {@see FactaError::signedNotTransmitted()}`['codigoGeneracion']`,
+     * or look it up with {@see Facta::getDocumentStatus()} / {@see Facta::listPendingDocuments()}.
+     * The SDK does not repeat this answer itself, although `service_unavailable` is otherwise retried.
+     */
+    public function isSignedNotTransmitted(): bool
+    {
+        return $this->errorCode === self::SERVICE_UNAVAILABLE
+            && $this->detail('estado') === 'firmado_sin_transmitir'
+            && $this->spent() !== null;
+    }
+
+    /**
+     * The document of a signed-but-not-transmitted answer, or null for any other error:
+     * `codigoGeneracion` and `numeroControl` (spent), `confirmado` (false when the server could not even
+     * confirm the signature was recorded; null when it did not say) and `siguientePaso` (the route to call,
+     * `POST /v1/dte/{codigoGeneracion}/reintentar`).
+     *
+     * @return array{codigoGeneracion: string, numeroControl: string, estado: string, confirmado: bool|null, siguientePaso: string|null}|null
+     */
+    public function signedNotTransmitted(): ?array
+    {
+        $spent = $this->spent();
+        if (!$this->isSignedNotTransmitted() || $spent === null) {
+            return null;
+        }
+        $confirmed = $this->detail('confirmado');
+        $next = $this->detail('siguientePaso');
+        return $spent + [
+            'estado' => 'firmado_sin_transmitir',
+            'confirmado' => is_bool($confirmed) ? $confirmed : null,
+            'siguientePaso' => is_string($next) ? $next : null,
+        ];
     }
 
     /**
