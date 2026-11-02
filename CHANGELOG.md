@@ -6,7 +6,21 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
-No changes yet.
+Every existing call, constant and return shape keeps working; the one behaviour change is under «Changed». Matches the staging API contract of 2-Nov-2026 (`tests/fixtures/openapi.yaml` refreshed).
+
+### Added
+
+- **Pending documents.** `listPendingDocuments($filters)` (`GET /v1/dte/pendientes`) lists documents Facta signed whose number is spent but that Hacienda has not answered; `retryDocument($code)` (`POST /v1/dte/{code}/reintentar`, sends the sign key) finishes one with the same signed bytes, never a new document. A `202` `estado: pendiente` is a result, not an error.
+- **Global discount.** `descuentoGlobal` (`['modo' => 'monto'|'porcentaje', 'valor' => ...]`) travels untouched on `issue()`, `prepare()`, `createDraft()`, `updateDraft()` and `issueDraft()` for 01, 03, 11 and 14; the new `DescuentoGlobal` value object (`DescuentoGlobal::monto()`, `::porcentaje()`) checks the shape it can check without the server, plain arrays work too. On 05/06 the server answers `global_discount_not_supported`. `status()` passes through `capabilities.descuentoGlobal`.
+- **Non-taxed lines (`noGravado`).** A charge (positive) or credit (negative) that does not affect the tax base (Manual Funcional v2.0 §XII) travels as its own `items[]` entry `['descripcion', 'noGravado', 'tipoItem', 'codigo'?]` on 01, 03, 05, 06 and 11; the new `NonTaxedLine` value object (`NonTaxedLine::BIEN`, `::SERVICIO`, `::AMBOS`) checks its shape, plain arrays work too. `issue()`, `prepare()`, `createDraft()`, `updateDraft()` and `issueDraft()` now check those lines before sending (`Support\NonTaxedLines`), only when one is present: `non_taxed_not_supported` outside the five types, `invalid_request` with `details.field` in the server's order — a bad amount (0, not finite, at or above 1e11 in absolute value, over 8 decimals), `cantidad` / `precioUni` / `montoDescu` / `tipoVenta` / `productId` / `applyIncomeWithholding` present on the line (even as `null`), a `uniMedida` other than 99, a missing `descripcion` or `tipoItem`, a non-string `codigo`, a `numeroDocumento` outside a note (05/06) —, and `non_taxed_requires_sale_line` when no sale line has `cantidad × precioUni − montoDescu` above zero; a present `noGravado`, even `null`, makes the line non-taxed, as on the server; a local refusal has status 0 and `details['local']` true, nothing is sent. `totales.totalNoGravado` and `capabilities.noGravado` pass through. In an export every good or service sold is a sale line at 0 %; only a charge that is not a sale goes as `noGravado`.
+- **FSE per-line income withholding** documented and pinned: `incomeWithholding: ['mode' => 'per_line']` plus `items[].applyIncomeWithholding` travel untouched, `status()` passes through `capabilities.fseIncomeWithholdingPerLine`, and every `fse_withholding_*` refusal is a named, final `FactaError` code. The SDK does not pre-check the selection; the server owns the rules.
+- **Drafts warn about unknown fields.** `createDraft()` (create and idempotent replay) and `updateDraft()` results gain `unknownFields` and `factaWarning` when the server reports `campo_desconocido` in `advertencias` / `Facta-Warning`, exactly as `issue()` already did. The ignored field is not stored in the draft: fix it and save a new version. A refused draft already exposed them through `FactaError::getUnknownFields()` / `getFactaWarning()`.
+- **Signed but not transmitted.** `FactaError::isSignedNotTransmitted()` and `signedNotTransmitted()` read the `503 service_unavailable` the server answers when a document was signed (number spent) but not sent to Hacienda: `codigoGeneracion`, `numeroControl`, `estado` (`firmado_sin_transmitir`), `confirmado`, `siguientePaso`. Do not issue again: finish it with `retryDocument()`. `spent()` also returns the pair for this answer.
+- Error codes `document_not_retryable` and `retry_in_progress` (409), the six `fse_withholding_*` codes (400) `global_discount_not_supported` (400) and the three non-taxed codes `non_taxed_requires_sale_line`, `non_taxed_not_supported` and `non_taxed_total_negative` (400), as `FactaError` constants.
+
+### Changed
+
+- The SDK no longer repeats a signed-but-not-transmitted `503`: under the same `Idempotency-Key` the server replays that answer, so the extra attempts only delayed the error. Every other `service_unavailable` is still retried as before.
 
 ## [0.2.0-rc.3] - 2026-11-01
 

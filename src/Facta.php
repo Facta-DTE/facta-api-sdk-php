@@ -13,6 +13,7 @@ use Facta\Api\Support\Catalog;
 use Facta\Api\Support\Delivery;
 use Facta\Api\Support\Diagnostics;
 use Facta\Api\Support\ManagedStorage;
+use Facta\Api\Support\NonTaxedLines;
 use Facta\Api\Support\Redactor;
 use Facta\Api\Support\StorageConfirmation;
 use Facta\Api\Support\Warnings;
@@ -75,7 +76,7 @@ final class Facta
 
     /** The routes that open the signing vault and therefore carry the second password. */
     private const SIGNING_PATHS = ['/v1/dte', '/v1/dte/sign'];
-    private const SIGNING_EVENT_PATH = '#^/v1/dte/[^/?]+/(?:invalidate|return)$#';
+    private const SIGNING_EVENT_PATH = '#^/v1/dte/[^/?]+/(?:invalidate|return|reintentar)$#';
     /** Issuing a draft opens the signing vault like POST /v1/dte, so it carries the second password too. */
     private const SIGNING_DRAFT_PATH = '#^/v1/drafts/[^/?]+/issue$#';
 
@@ -240,7 +241,9 @@ final class Facta
      * @param array<string, mixed> $options Per-call options: `timeoutMs`, `headers`.
      * @return array<string, mixed> The decoded answer: `ok`, `version`, `ambiente`, `emisor`,
      *                              `llave` (`alcances`, `tiposDte`, `catalogMode`, ...), `firma`,
-     *                              `sincronizacion`, `limites`, and `region` when advertised.
+     *                              `sincronizacion`, `limites`, `capabilities` (`descuentoGlobal`,
+     *                              `fseIncomeWithholdingPerLine`, `noGravado`, ... true when the server supports
+     *                              them), and `region` when advertised.
      * @throws FactaError
      */
     public function status(array $options = []): array
@@ -370,6 +373,7 @@ final class Facta
     public function issue(array $request, array $options = []): array
     {
         $options = $this->options($options, ['idempotencyKey', 'deliver', 'headers', 'timeoutMs']);
+        NonTaxedLines::check($request);
         $deliver = $options['deliver'] ?? null;
         unset($options['deliver']);
 
@@ -396,6 +400,7 @@ final class Facta
     public function prepare(array $request, array $options = []): array
     {
         $options = $this->options($options, ['idempotencyKey', 'headers', 'timeoutMs']);
+        NonTaxedLines::check($request);
         $raw = $this->execute('POST', '/v1/dte/prepare', $request, $options, false);
         $warningHeader = $this->lastWarningHeader;
         if (!($raw instanceof \stdClass)) {
@@ -573,6 +578,71 @@ final class Facta
     public function getDocumentStatus(string $generationCode, array $options = []): array
     {
         return $this->callArray('GET', '/v1/dte/' . rawurlencode($generationCode), null, $this->options($options, ['timeoutMs']));
+    }
+
+    /**
+     * Documents Facta signed (their number is spent) that Hacienda has not answered yet
+     * (`GET /v1/dte/pendientes`, scope `query`). Look here after any uncertain emission, BEFORE issuing
+     * again: a new emission is another sale, with another code and another control number. Oldest
+     * first; metadata only (never the document or the receiver).
+     *
+     * Filters: `estado` ("firmado", the default: pending; "rechazado": refused, awaiting correction),
+     * `tipoDte`, `limit` (1-100), `cursor` (the previous page's `siguiente`).
+     *
+     * @param array<string, mixed> $filters
+     * @param array<string, mixed> $options `timeoutMs`.
+     * @return array{pendientes: array<int, array<string, mixed>>, siguiente: string|null} Each row carries
+     *         `codigoGeneracion`, `numeroControl`, `tipoDte`, `estado`, `firmadoEn`, `intentos`, `plazo`,
+     *         `reintentable` and `motivoNoReintentable`.
+     * @throws FactaError
+     */
+    public function listPendingDocuments(array $filters = [], array $options = []): array
+    {
+        $options = $this->options($options, ['timeoutMs']);
+        $query = [];
+        foreach ($filters as $name => $value) {
+            if (!in_array($name, ['estado', 'tipoDte', 'limit', 'cursor'], true)) {
+                throw new \InvalidArgumentException('Unknown listPendingDocuments filter: ' . $name . '.');
+            }
+            if ($value !== null) {
+                $query[(string) $name] = (string) $value;
+            }
+        }
+        $page = $this->callArray('GET', '/v1/dte/pendientes' . self::queryString($query), null, $options);
+        if (!isset($page['pendientes']) || !is_array($page['pendientes'])) {
+            $page['pendientes'] = [];
+        }
+        $page['siguiente'] = isset($page['siguiente']) && is_string($page['siguiente']) ? $page['siguiente'] : null;
+        /** @var array{pendientes: array<int, array<string, mixed>>, siguiente: string|null} $page */
+        return $page;
+    }
+
+    /**
+     * Finishes a pending document WITHOUT creating a new one (`POST /v1/dte/{code}/reintentar`, scope
+     * `issue`; carries the sign key). Facta asks Hacienda first and resends the SAME signed bytes (same
+     * `codigoGeneracion`, same `numeroControl`) only if Hacienda never received them; it never signs or
+     * numbers anything, so it is safe to repeat.
+     *
+     * This is the route for a document {@see FactaError::isSignedNotTransmitted()} reported, for a
+     * `contingencia` answer and for any row of {@see Facta::listPendingDocuments()}.
+     *
+     * Answers `estado` "sellado" (`via`: "consulta", "retransmision" or "ya_asentado") or "pendiente"
+     * (HTTP 202: Hacienda did not answer; call again later, do not issue a new one). Throws `mh_rejected`
+     * when Hacienda refuses, `document_not_retryable` (`details.motivo`) for documents the app issued or
+     * that cannot be finished, and `retry_in_progress` while another retry runs
+     * ({@see FactaError::getRetryAfterMs()} says how long to wait).
+     *
+     * @param array<string, mixed> $options `timeoutMs`, `headers`.
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function retryDocument(string $generationCode, array $options = []): array
+    {
+        if (trim($generationCode) === '') {
+            throw new \InvalidArgumentException('retryDocument() needs the document\'s codigoGeneracion.');
+        }
+        $options = $this->options($options, []);
+        return $this->callArray('POST', '/v1/dte/' . rawurlencode($generationCode) . '/reintentar', null, $options);
     }
 
     /**
@@ -1527,15 +1597,24 @@ final class Facta
      * `idempotency_key_reuse`. `drafts_not_ready` (409) means the owner has not opened Facta with their
      * vault since the company began sharing its data key: ask them to open it once.
      *
+     * A request field Facta DTE does not know is a warning, never an error, exactly as in
+     * {@see Facta::issue()}: the answer carries `advertencias` (`campo_desconocido`) and the SDK adds
+     * `unknownFields` and `factaWarning`, only when there is something to report. **The ignored field is
+     * NOT part of the draft** (the draft keeps the resolved request), so fix it and save a new version
+     * with {@see Facta::updateDraft()} before it is issued. A replay with the same `idempotencyKey`
+     * reports them again; a refused draft carries them in {@see FactaError::getUnknownFields()}.
+     *
      * @param array<string, mixed> $request
      * @param array<string, mixed> $options `idempotencyKey`, `timeoutMs`, `headers`.
-     * @return array<string, mixed> `borradorId`, `estado`, `version`, `totales`.
+     * @return array<string, mixed> `borradorId`, `estado`, `version`, `totales`, and `advertencias`,
+     *         `unknownFields`, `factaWarning` when a field was ignored.
      * @throws FactaError
      */
     public function createDraft(array $request, array $options = []): array
     {
         $options = $this->options($options, ['idempotencyKey']);
-        return $this->draftOf($this->callArray('POST', '/v1/drafts', self::draftBody($request), $options));
+        $draft = $this->draftOf($this->callArray('POST', '/v1/drafts', self::draftBody($request), $options));
+        return Warnings::attach($draft, $this->lastWarningHeader);
     }
 
     /**
@@ -1608,7 +1687,8 @@ final class Facta
     /**
      * Saves a new version of a draft that is still pending. `$version` is the one you read; it travels
      * as `If-Match` (`version_mismatch`, 409, when stale). Refused while a person has the draft open in
-     * the app, while it is being issued, or once resolved.
+     * the app, while it is being issued, or once resolved. Unknown fields are warned exactly as in
+     * {@see Facta::createDraft()} (`unknownFields`, `factaWarning`) and are not part of the new version.
      *
      * @param array<string, mixed> $request Same shape as {@see Facta::createDraft()}.
      * @param array<string, mixed> $options
@@ -1622,7 +1702,8 @@ final class Facta
         $headers = isset($options['headers']) && is_array($options['headers']) ? $options['headers'] : [];
         $headers['If-Match'] = (string) self::draftVersion($version);
         $options['headers'] = $headers;
-        return $this->draftOf($this->callArray('PUT', '/v1/drafts/' . rawurlencode($id), self::draftBody($request), $options));
+        $draft = $this->draftOf($this->callArray('PUT', '/v1/drafts/' . rawurlencode($id), self::draftBody($request), $options));
+        return Warnings::attach($draft, $this->lastWarningHeader);
     }
 
     /**
@@ -1654,6 +1735,7 @@ final class Facta
     {
         $id = Catalog::requireId($draftId, 'draft');
         $options = $this->options($options, ['idempotencyKey', 'deliver']);
+        NonTaxedLines::check($request);
         $deliver = $options['deliver'] ?? null;
         unset($options['deliver']);
         $body = self::withDelivery($request, $deliver);
@@ -1669,6 +1751,7 @@ final class Facta
      */
     private static function draftBody(array $request): array
     {
+        NonTaxedLines::check($request);
         if (isset($request['referencia']) && (!is_string($request['referencia']) || $request['referencia'] === '' || strlen($request['referencia']) > 64)) {
             throw new \InvalidArgumentException('referencia must be a text of 1 to 64 characters.');
         }
@@ -2062,7 +2145,9 @@ final class Facta
             try {
                 return $this->attempt($method, $path, $headers, $payload, $timeoutMs, $binary);
             } catch (FactaError $error) {
-                if (!in_array($error->getErrorCode(), self::RETRYABLE, true)) {
+                // A signed-but-not-transmitted 503 is replayed as-is under the same key: repeating it
+                // cannot help, and the caller must move to retryDocument() instead.
+                if (!in_array($error->getErrorCode(), self::RETRYABLE, true) || $error->isSignedNotTransmitted()) {
                     throw $error;
                 }
                 $last = $error;

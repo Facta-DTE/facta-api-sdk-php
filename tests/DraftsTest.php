@@ -127,4 +127,72 @@ final class DraftsTest extends ClientCase
         $this->expectException(FactaError::class);
         $this->client($fake)->createDraft(self::REQUEST);
     }
+
+    /** @return array<int, array<string, string>> */
+    private static function warnings(): array
+    {
+        return [
+            ['codigo' => 'campo_desconocido', 'mensaje' => 'El campo items[0].descuento no existe', 'campo' => 'items[0].descuento', 'sugerencia' => 'items[0].montoDescu'],
+            ['codigo' => 'campo_desconocido', 'mensaje' => 'El campo aplicarRetecionIva no existe', 'campo' => 'aplicarRetecionIva', 'sugerencia' => 'aplicarRetencionIva'],
+        ];
+    }
+
+    /** @param array<string, mixed> $draft */
+    private static function warned(int $status, array $draft): \Facta\Api\Http\Response
+    {
+        return FakeTransport::json($status, (string) json_encode($draft + ['advertencias' => self::warnings()]), ['Facta-Warning' => 'campo_desconocido; campos=2']);
+    }
+
+    public function testCreateReplayAndUpdateSurfaceUnknownFieldsLikeIssue(): void
+    {
+        $fake = new FakeTransport([self::warned(201, self::DRAFT), self::warned(200, self::DRAFT), self::warned(200, ['version' => 3] + self::DRAFT)]);
+        $client = $this->client($fake);
+        $typo = self::REQUEST + ['aplicarRetecionIva' => true];
+
+        $created = $client->createDraft($typo, ['idempotencyKey' => 'order-77']);
+        $replayed = $client->createDraft($typo, ['idempotencyKey' => 'order-77']);
+        $updated = $client->updateDraft(self::ID, 2, $typo);
+
+        foreach ([$created, $replayed, $updated] as $draft) {
+            $this->assertSame(['items[0].descuento', 'aplicarRetecionIva'], array_column($draft['unknownFields'], 'campo'));
+            $this->assertSame(['items[0].montoDescu', 'aplicarRetencionIva'], array_column($draft['unknownFields'], 'sugerencia'));
+            $this->assertSame(['code' => 'campo_desconocido', 'count' => 2], $draft['factaWarning']);
+            $this->assertSame('campo_desconocido', $draft['advertencias'][0]['codigo']);
+            $this->assertSame(self::ID, $draft['borradorId']);
+        }
+        $this->assertSame(3, $updated['version']);
+    }
+
+    public function testACleanDraftAnswerIsUntouched(): void
+    {
+        $fake = new FakeTransport([self::ok(self::DRAFT, 201), self::ok(self::DRAFT)]);
+        $client = $this->client($fake);
+        foreach ([$client->createDraft(self::REQUEST), $client->updateDraft(self::ID, 2, self::REQUEST)] as $draft) {
+            $this->assertArrayNotHasKey('unknownFields', $draft);
+            $this->assertArrayNotHasKey('factaWarning', $draft);
+        }
+    }
+
+    public function testAWarningOfAnEarlierCallDoesNotLeakIntoACleanDraft(): void
+    {
+        $fake = new FakeTransport([self::warned(201, self::DRAFT), self::ok(self::DRAFT, 201)]);
+        $client = $this->client($fake);
+        $client->createDraft(self::REQUEST);
+        $this->assertArrayNotHasKey('factaWarning', $client->createDraft(self::REQUEST));
+    }
+
+    public function testARefusedDraftCarriesTheWarningsInItsError(): void
+    {
+        $details = (string) json_encode(['borradorId' => self::ID, 'advertencias' => self::warnings()]);
+        $refusal = FakeTransport::json(422, '{"error":{"code":"idempotency_key_reuse","message":"m","details":' . $details . '}}', ['Facta-Warning' => 'campo_desconocido; campos=2']);
+        $fake = new FakeTransport([$refusal]);
+        try {
+            $this->client($fake)->createDraft(self::REQUEST, ['idempotencyKey' => 'order-77']);
+            $this->fail('expected FactaError');
+        } catch (FactaError $e) {
+            $this->assertSame(FactaError::IDEMPOTENCY_KEY_REUSE, $e->getErrorCode());
+            $this->assertCount(2, $e->getUnknownFields());
+            $this->assertSame(['code' => 'campo_desconocido', 'count' => 2], $e->getFactaWarning());
+        }
+    }
 }

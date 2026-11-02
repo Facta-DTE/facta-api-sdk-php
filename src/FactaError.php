@@ -35,6 +35,26 @@ class FactaError extends \Exception
     public const INCLUDE_LIMIT_EXCEEDED = 'include_limit_exceeded';
     public const VALIDATION_FAILED = 'validation_failed';
     public const RETENTION_MIXED_CLASS_UNSUPPORTED = 'retention_mixed_class_unsupported';
+    /** HTTP 400: `incomeWithholding.mode` is not `per_line`, or the object carries another key. */
+    public const FSE_WITHHOLDING_MODE_INVALID = 'fse_withholding_mode_invalid';
+    /** HTTP 400: `incomeWithholding` or per-line decisions were combined with `aplicarReteRenta`. Choose one. */
+    public const FSE_WITHHOLDING_LEGACY_CONFLICT = 'fse_withholding_legacy_conflict';
+    /** HTTP 400: per-line FSE withholding controls on a document that is not an FSE (14). */
+    public const FSE_WITHHOLDING_NOT_SUPPORTED = 'fse_withholding_not_supported';
+    /** HTTP 400: per-line mode without lines, or a line without its `applyIncomeWithholding` decision. */
+    public const FSE_WITHHOLDING_SELECTION_REQUIRED = 'fse_withholding_selection_required';
+    /** HTTP 400: an `applyIncomeWithholding` decision that is not a boolean. */
+    public const FSE_WITHHOLDING_SELECTION_INVALID = 'fse_withholding_selection_invalid';
+    /** HTTP 400: `applyIncomeWithholding` sent without `incomeWithholding: ['mode' => 'per_line']`. */
+    public const FSE_WITHHOLDING_MODE_REQUIRED = 'fse_withholding_mode_required';
+    /** HTTP 400: `descuentoGlobal` on a credit (05) or debit (06) note; their amounts come from the corrected document. No correlative spent. */
+    public const GLOBAL_DISCOUNT_NOT_SUPPORTED = 'global_discount_not_supported';
+    /** HTTP 400: a non-taxed line (`items[].noGravado`) on a document with no sale line above zero. Also raised locally (status 0). No correlative spent. */
+    public const NON_TAXED_REQUIRES_SALE_LINE = 'non_taxed_requires_sale_line';
+    /** HTTP 400: a non-taxed line on a type whose schema has no `noGravado` (14; also 07, 15). Also raised locally (status 0). No correlative spent. */
+    public const NON_TAXED_NOT_SUPPORTED = 'non_taxed_not_supported';
+    /** HTTP 400: the non-taxed credits leave the total to pay below zero. Only the server knows the total. No correlative spent. */
+    public const NON_TAXED_TOTAL_NEGATIVE = 'non_taxed_total_negative';
     public const NOT_FOUND = 'not_found';
     public const METHOD_NOT_ALLOWED = 'method_not_allowed';
     public const NOT_SEALED = 'not_sealed';
@@ -77,6 +97,10 @@ class FactaError extends \Exception
     public const RETURN_TYPE_NOT_ALLOWED = 'return_type_not_allowed';
     public const RETURN_PDF_UNAVAILABLE = 'return_pdf_unavailable';
     public const HAS_RETURN_EVENTS = 'has_return_events';
+    /** HTTP 409 from `retryDocument()`: the API cannot finish this document; `details.motivo` says why. */
+    public const DOCUMENT_NOT_RETRYABLE = 'document_not_retryable';
+    /** HTTP 409 from `retryDocument()`: another retry of the same document is running. Wait `Retry-After`; nothing was sent. */
+    public const RETRY_IN_PROGRESS = 'retry_in_progress';
     public const RATE_LIMITED = 'rate_limited';
     public const AMOUNT_LIMIT = 'amount_limit';
     public const MH_REJECTED = 'mh_rejected';
@@ -189,7 +213,10 @@ class FactaError extends \Exception
 
     /**
      * The correlative a rejection already burned, or null. The corrected
-     * document may reuse that number and generation code.
+     * document may reuse that number and generation code. Also set on a
+     * signed-but-not-transmitted answer ({@see FactaError::isSignedNotTransmitted()}),
+     * where the number belongs to a document owed to Hacienda: finish it with
+     * {@see Facta::retryDocument()}, never reuse it in a new request.
      *
      * @return array{codigoGeneracion: string, numeroControl: string}|null
      */
@@ -201,6 +228,47 @@ class FactaError extends \Exception
             return null;
         }
         return ['codigoGeneracion' => $cg, 'numeroControl' => $nc];
+    }
+
+    /**
+     * True for the `503 service_unavailable` the server answers when the document IS (or may be) signed
+     * and its control number spent, but it was not transmitted to Hacienda from that request
+     * (`details.estado` "firmado_sin_transmitir").
+     *
+     * **Do not issue again** (with this or another `Idempotency-Key`): that would be a second sale. Repeating
+     * the same request with the same key only replays this answer. Finish THIS document with
+     * {@see Facta::retryDocument()} using {@see FactaError::signedNotTransmitted()}`['codigoGeneracion']`,
+     * or look it up with {@see Facta::getDocumentStatus()} / {@see Facta::listPendingDocuments()}.
+     * The SDK does not repeat this answer itself, although `service_unavailable` is otherwise retried.
+     */
+    public function isSignedNotTransmitted(): bool
+    {
+        return $this->errorCode === self::SERVICE_UNAVAILABLE
+            && $this->detail('estado') === 'firmado_sin_transmitir'
+            && $this->spent() !== null;
+    }
+
+    /**
+     * The document of a signed-but-not-transmitted answer, or null for any other error:
+     * `codigoGeneracion` and `numeroControl` (spent), `confirmado` (false when the server could not even
+     * confirm the signature was recorded; null when it did not say) and `siguientePaso` (the route to call,
+     * `POST /v1/dte/{codigoGeneracion}/reintentar`).
+     *
+     * @return array{codigoGeneracion: string, numeroControl: string, estado: string, confirmado: bool|null, siguientePaso: string|null}|null
+     */
+    public function signedNotTransmitted(): ?array
+    {
+        $spent = $this->spent();
+        if (!$this->isSignedNotTransmitted() || $spent === null) {
+            return null;
+        }
+        $confirmed = $this->detail('confirmado');
+        $next = $this->detail('siguientePaso');
+        return $spent + [
+            'estado' => 'firmado_sin_transmitir',
+            'confirmado' => is_bool($confirmed) ? $confirmed : null,
+            'siguientePaso' => is_string($next) ? $next : null,
+        ];
     }
 
     /**
