@@ -128,6 +128,53 @@ foreach ($result['unknownFields'] ?? [] as $warning) {
   there is something to report. On a failure, `FactaError::getUnknownFields()` and `getFactaWarning()` read them.
   Check the first answer of your integration: an ignored field is a discount or a payment the document does not carry.
 
+### Non-taxed lines (`noGravado`)
+
+A charge or credit that does not affect the tax base («Cargos/Abonos que no afectan la base imponible»,
+Manual Funcional del Sistema de Transmisión v2.0 §XII) is its **own line** on 01, 03, 05, 06 and 11. A loan
+instalment is the usual case: the interest is a sale (exempt here), the repaid capital is not.
+
+```php
+use Facta\Api\NonTaxedLine;
+
+if (empty($facta->status()['capabilities']['noGravado'])) {
+    throw new RuntimeException('This API does not accept noGravado lines yet.');
+}
+$result = $facta->issue([
+    'tipoDte'  => '03',
+    'receptor' => ['customerId' => $customerId],
+    'items'    => [
+        ['descripcion' => 'Intereses de la cuota 7', 'cantidad' => 1, 'precioUni' => 1250, 'tipoItem' => 2, 'tipoVenta' => 'exenta'],
+        new NonTaxedLine('Capital', 50000, NonTaxedLine::SERVICIO, 'CAP'),
+        // or the plain array ['descripcion' => 'Capital', 'noGravado' => 50000, 'tipoItem' => 2, 'codigo' => 'CAP']
+    ],
+], ['idempotencyKey' => 'loan-77-instalment-7']);
+$result['totales']['totalNoGravado']; // 50000, already inside totalPagar
+```
+
+* The line is `descripcion`, `noGravado` (> 0 charge, < 0 credit; never 0, at most 8 decimals), `tipoItem`
+  (1 bien, 2 servicio, 3 ambos; **required**, Facta never picks it) and an optional `codigo`. It cannot carry
+  `cantidad`, `precioUni`, `montoDescu`, `tipoVenta` or `productId` (`invalid_request` naming the field).
+* Facta writes it as the Manual says (cantidad 1, `uniMedida` 99, `precioUni` 0, every sale column and tax 0) and
+  adds it **only** to `resumen.totalNoGravado` and `totalPagar`; VAT, subtotal, discounts and the withholding and
+  perception bases do not move. `pagos` must add up to the new total to pay.
+* At least one sale line (gravada, exenta or no sujeta) above zero is required (`non_taxed_requires_sale_line`);
+  on 14 it is `non_taxed_not_supported`. The SDK checks both, and the line shape, **before sending**
+  (`FactaError` with that code, status 0, `details['local']` true), so nothing is reserved. Credits that leave
+  the total below zero are `non_taxed_total_negative` from the server. None of these spends a number.
+* **Exports (11):** every good or service you sell is a sale line, taxed at 0 %. Only a charge that is **not** a
+  sale, such as reimbursing a courier cost paid for the buyer, goes as `noGravado`:
+
+```php
+'items' => [
+    ['descripcion' => 'Software development, October', 'cantidad' => 1, 'precioUni' => 4800, 'tipoItem' => 2],
+    ['descripcion' => 'Reembolso de gastos de courier', 'noGravado' => 35.4, 'tipoItem' => 2],
+],
+```
+
+* Credit (05) and debit (06) notes accept their own non-taxed lines too. The same line works in `prepare()`,
+  `createDraft()`, `updateDraft()` and `issueDraft()`.
+
 ### Methods
 
 | Method | Route | Notes |
@@ -438,6 +485,13 @@ calcula impuestos**: eso lo hace el servidor.
   `::porcentaje()`, o el arreglo `['modo' => ..., 'valor' => ...]`) en 01, 03, 11 y 14; en 05/06 el servidor
   responde `global_discount_not_supported`. En la FSE, `incomeWithholding => ['mode' => 'per_line']` con
   `applyIncomeWithholding` en cada línea. `status()['capabilities']` dice si el servidor los admite.
+* **Líneas no gravadas (`noGravado`):** un cargo (positivo) o abono (negativo) que no afecta la base imponible
+  es una línea propia en 01, 03, 05, 06 y 11: `new NonTaxedLine('Capital', 50000, NonTaxedLine::SERVICIO, 'CAP')`
+  o el arreglo `['descripcion' => ..., 'noGravado' => ..., 'tipoItem' => ...]` (`tipoItem` obligatorio). Solo
+  mueve `totalNoGravado` y `totalPagar`. Necesita al menos una línea de venta con valor
+  (`non_taxed_requires_sale_line`) y en el 14 es `non_taxed_not_supported`; el SDK lo revisa antes de enviar. En
+  una exportación, todo lo vendido es una línea de venta al 0 %; solo un cargo que no es venta (un reembolso) va
+  como `noGravado`.
 * **Borradores:** `createDraft()` y `updateDraft()` también avisan de campos desconocidos (`unknownFields`,
   `factaWarning`). El campo ignorado no queda en el borrador: corríjalo y guarde una versión nueva.
 * **Firmado sin transmitir:** si `FactaError::isSignedNotTransmitted()` es verdadero, el documento ya está firmado
