@@ -12,7 +12,8 @@ namespace Facta\Api;
  * Optional: a plain array (`['descripcion' => 'Capital', 'noGravado' => 50000, 'tipoItem' => 2]`) works
  * just as well; this value object only checks the shape you can check without the server and encodes
  * itself. It has no setter for `cantidad`, `precioUni`, `montoDescu`, `tipoVenta` or `productId`, which a
- * non-taxed line cannot carry. The server owns the rest:
+ * non-taxed line cannot carry, and no `uniMedida` (Facta writes 99; in a plain array it may be sent only
+ * as 99). The server owns the rest:
  *
  *  - Facta writes the line as the Manual says (cantidad 1, `uniMedida` 99, `precioUni` 0, every sale
  *    column and tax 0) and adds `noGravado` ONLY to `resumen.totalNoGravado` and `totalPagar`; VAT,
@@ -50,7 +51,7 @@ final class NonTaxedLine implements \JsonSerializable
 
     /**
      * @param string      $descripcion     What the charge or credit is («Capital», «Reembolso de courier»).
-     * @param mixed       $noGravado       An int or float: positive = charge, negative = credit; never 0, at most 8 decimals.
+     * @param mixed       $noGravado       An int or float: positive = charge, negative = credit; never 0, below 1e11 in absolute value, at most 8 decimals.
      * @param int         $tipoItem        Required, never defaulted: 1 bien, 2 servicio, 3 ambos.
      * @param string|null $codigo          Your own code for the charge.
      * @param string|null $numeroDocumento 05/06: the corrected document this line belongs to, when the note corrects several.
@@ -62,7 +63,7 @@ final class NonTaxedLine implements \JsonSerializable
             throw new \InvalidArgumentException('NonTaxedLine: descripcion is required.');
         }
         if (!\Facta\Api\Support\NonTaxedLines::validAmount($noGravado)) {
-            throw new \InvalidArgumentException('NonTaxedLine: noGravado must be a non-zero number with at most 8 decimals.');
+            throw new \InvalidArgumentException('NonTaxedLine: noGravado must be a non-zero number below 1e11 in absolute value with at most 8 decimals.');
         }
         if ($tipoItem !== self::BIEN && $tipoItem !== self::SERVICIO && $tipoItem !== self::AMBOS) {
             throw new \InvalidArgumentException('NonTaxedLine: tipoItem must be 1 (bien), 2 (servicio) or 3 (ambos).');

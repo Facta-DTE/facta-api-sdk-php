@@ -119,8 +119,54 @@ final class NonTaxedLinesTest extends ClientCase
         $fake = new FakeTransport([self::ok(self::SEALED)]);
         $this->client($fake)->issue(['tipoDte' => '14', 'items' => [['descripcion' => 'x', 'cantidad' => 1, 'precioUni' => 0]]]);
         NonTaxedLines::check(['items' => 'not a list']);
-        NonTaxedLines::check(['tipoDte' => '14', 'items' => [['descripcion' => 'x', 'noGravado' => null, 'cantidad' => 1]]]);
         $this->assertCount(1, $fake->requests);
+    }
+
+    public function testAPresentNullNoGravadoIsANonTaxedLineAsOnTheServer(): void
+    {
+        // json_encode() sends the null, and the server's Object.hasOwn treats the line as non-taxed.
+        $this->local(function (): void {
+            NonTaxedLines::check(['tipoDte' => '14', 'items' => [['descripcion' => 'x', 'noGravado' => null, 'cantidad' => 1]]]);
+        }, FactaError::NON_TAXED_NOT_SUPPORTED);
+        $e = $this->local(function (): void {
+            NonTaxedLines::check(['tipoDte' => '01', 'items' => [self::SALE, ['noGravado' => null] + self::CAPITAL]]);
+        }, FactaError::INVALID_REQUEST);
+        $this->assertSame('items[1].noGravado', $e->getDetails()['field']);
+        $e = $this->local(function (): void {
+            NonTaxedLines::check(['tipoDte' => '01', 'items' => [self::SALE, self::CAPITAL + ['cantidad' => null]]]);
+        }, FactaError::INVALID_REQUEST);
+        $this->assertSame('items[1].cantidad', $e->getDetails()['field'], 'a present null sale field is still sent');
+    }
+
+    public function testLocalChecksFollowTheServerOrderAndRules(): void
+    {
+        $field = function (array $request): string {
+            return $this->local(function () use ($request): void {
+                NonTaxedLines::check($request);
+            }, FactaError::INVALID_REQUEST)->getDetails()['field'];
+        };
+        NonTaxedLines::check(['tipoDte' => '01', 'items' => [self::SALE, self::CAPITAL + ['uniMedida' => 99]]]);
+        $this->assertSame('items[1].uniMedida', $field(['tipoDte' => '01', 'items' => [self::SALE, self::CAPITAL + ['uniMedida' => 59]]]));
+        $this->assertSame('items[1].noGravado', $field(['tipoDte' => '01', 'items' => [self::SALE, ['noGravado' => 0, 'cantidad' => 1] + self::CAPITAL]]));
+        $this->assertSame('items[1].cantidad', $field(['tipoDte' => '01', 'items' => [self::SALE, self::CAPITAL + ['cantidad' => 1, 'uniMedida' => 59]]]));
+        $this->assertSame('items[1].descripcion', $field(['tipoDte' => '01', 'items' => [self::SALE, ['noGravado' => 5, 'descripcion' => '']]]));
+        $this->assertSame('items[1].noGravado', $field(['tipoDte' => '01', 'items' => [self::SALE, ['noGravado' => -1e11] + self::CAPITAL]]));
+        $this->assertSame('items[1].noGravado', $field(['tipoDte' => '01', 'items' => [self::SALE, ['noGravado' => 100000000000] + self::CAPITAL]]));
+        NonTaxedLines::check(['tipoDte' => '01', 'items' => [self::SALE, ['noGravado' => 99999999999.5] + self::CAPITAL]]);
+        $this->assertSame('items[1].codigo', $field(['tipoDte' => '01', 'items' => [self::SALE, ['codigo' => 7] + self::CAPITAL]]));
+        NonTaxedLines::check(['tipoDte' => '01', 'items' => [self::SALE, ['codigo' => null] + self::CAPITAL]]);
+        $this->assertSame('items[1].numeroDocumento', $field(['tipoDte' => '01', 'items' => [self::SALE, self::CAPITAL + ['numeroDocumento' => 'X']]]));
+        $this->assertSame('items[1].numeroDocumento', $field(['tipoDte' => '01', 'items' => [self::SALE, new NonTaxedLine('Capital', 5, NonTaxedLine::SERVICIO, null, 'X')]]));
+        NonTaxedLines::check(['tipoDte' => '05', 'items' => [self::SALE, self::CAPITAL + ['numeroDocumento' => 'X']]]);
+        $this->assertSame('items[1].numeroDocumento', $field(['tipoDte' => '06', 'items' => [self::SALE, self::CAPITAL + ['numeroDocumento' => ' ']]]));
+    }
+
+    public function testASaleLineDiscountedToZeroIsNotASaleLine(): void
+    {
+        $this->local(function (): void {
+            NonTaxedLines::check(['tipoDte' => '01', 'items' => [['descripcion' => 'x', 'cantidad' => 2, 'precioUni' => 5, 'montoDescu' => 10], self::CAPITAL]]);
+        }, FactaError::NON_TAXED_REQUIRES_SALE_LINE);
+        NonTaxedLines::check(['tipoDte' => '01', 'items' => [['descripcion' => 'x', 'cantidad' => 2, 'precioUni' => 5, 'montoDescu' => 9.99], self::CAPITAL]]);
     }
 
     public function testServerSideRefusalsAreNamedCodesAndNeverRetried(): void
@@ -152,7 +198,7 @@ final class NonTaxedLinesTest extends ClientCase
     {
         $this->assertSame(self::CAPITAL, (new NonTaxedLine('Capital', 50000, NonTaxedLine::SERVICIO, 'CAP'))->toArray());
         $this->assertSame('{"descripcion":"Abono","noGravado":-1.5,"tipoItem":1,"numeroDocumento":"DTE-03"}', json_encode(new NonTaxedLine('Abono', -1.5, NonTaxedLine::BIEN, null, 'DTE-03')));
-        foreach ([['', 1, 2], ['x', 0, 2], ['x', '5', 2], ['x', INF, 2], ['x', 1.000000001, 2], ['x', 1, 4], ['x', 1, 0]] as $bad) {
+        foreach ([['', 1, 2], ['x', 0, 2], ['x', '5', 2], ['x', INF, 2], ['x', 1.000000001, 2], ['x', 1e11, 2], ['x', 1, 4], ['x', 1, 0]] as $bad) {
             try {
                 new NonTaxedLine($bad[0], $bad[1], $bad[2]);
                 $this->fail('NonTaxedLine accepted ' . var_export($bad, true));

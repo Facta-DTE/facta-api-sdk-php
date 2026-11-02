@@ -31,17 +31,23 @@ final class NonTaxedLines
         if ($line instanceof NonTaxedLine) {
             return true;
         }
-        return is_array($line) && array_key_exists('noGravado', $line) && $line['noGravado'] !== null;
+        // Present is enough, even as null: json_encode() sends the null and the server treats the line as
+        // non-taxed (and then refuses the value).
+        return is_array($line) && array_key_exists('noGravado', $line);
     }
 
     /**
-     * Not zero, finite, at most 8 decimals (read on the number's own text: no arithmetic on the amount).
+     * Not zero, finite, below 1e11 in absolute value, at most 8 decimals (read on the number's own text: no
+     * arithmetic on the amount).
      *
      * @param mixed $value
      */
     public static function validAmount($value): bool
     {
         if (!(is_int($value) || is_float($value)) || !is_finite((float) $value) || $value == 0) {
+            return false;
+        }
+        if (abs($value) >= 1e11) {
             return false;
         }
         if (is_int($value)) {
@@ -82,6 +88,7 @@ final class NonTaxedLines
                 'field' => $first, 'tipoDte' => $tipoDte, 'supported' => self::DTE_TYPES,
             ]);
         }
+        $isNote = $tipoDte === '05' || $tipoDte === '06';
         $saleLines = 0;
         foreach (array_values($items) as $index => $item) {
             $label = 'items[' . $index . ']';
@@ -92,25 +99,38 @@ final class NonTaxedLines
                 continue;
             }
             if ($item instanceof NonTaxedLine) {
-                continue; // its constructor already checked the shape
+                $item = $item->toArray(); // its constructor checked the shape; numeroDocumento still depends on the type
             }
             if (!is_array($item)) {
                 continue;
             }
+            // Same checks, same order and same `details.field` as the server's `nonTaxedWireProblem`.
+            if (!self::validAmount($item['noGravado'])) {
+                self::refuse(FactaError::INVALID_REQUEST, $label . '.noGravado must be a non-zero number below 1e11 in absolute value with at most 8 decimals.', ['field' => $label . '.noGravado']);
+            }
             foreach (self::EXCLUSIVE as $field) {
-                if (array_key_exists($field, $item) && $item[$field] !== null) {
+                if (array_key_exists($field, $item)) {
                     self::refuse(FactaError::INVALID_REQUEST, $label . '.' . $field . ' does not go on a non-taxed line: send only descripcion, noGravado, tipoItem and codigo.', ['field' => $label . '.' . $field]);
                 }
             }
-            if (!self::validAmount($item['noGravado'])) {
-                self::refuse(FactaError::INVALID_REQUEST, $label . '.noGravado must be a non-zero number with at most 8 decimals.', ['field' => $label . '.noGravado']);
+            if (array_key_exists('uniMedida', $item) && $item['uniMedida'] !== 99) {
+                self::refuse(FactaError::INVALID_REQUEST, $label . '.uniMedida of a non-taxed line is always 99 (or leave it out).', ['field' => $label . '.uniMedida']);
+            }
+            if (!isset($item['descripcion']) || !is_string($item['descripcion']) || trim($item['descripcion']) === '') {
+                self::refuse(FactaError::INVALID_REQUEST, $label . '.descripcion is required on a non-taxed line.', ['field' => $label . '.descripcion']);
             }
             $type = $item['tipoItem'] ?? null;
             if ($type !== 1 && $type !== 2 && $type !== 3) {
                 self::refuse(FactaError::INVALID_REQUEST, $label . '.tipoItem is required on a non-taxed line: 1 (bien), 2 (servicio) or 3 (ambos).', ['field' => $label . '.tipoItem']);
             }
-            if (!isset($item['descripcion']) || !is_string($item['descripcion']) || trim($item['descripcion']) === '') {
-                self::refuse(FactaError::INVALID_REQUEST, $label . '.descripcion is required on a non-taxed line.', ['field' => $label . '.descripcion']);
+            if (isset($item['codigo']) && !is_string($item['codigo'])) {
+                self::refuse(FactaError::INVALID_REQUEST, $label . '.codigo must be a string.', ['field' => $label . '.codigo']);
+            }
+            if (array_key_exists('numeroDocumento', $item)) {
+                $number = $item['numeroDocumento'];
+                if (!$isNote || !is_string($number) || trim($number) === '') {
+                    self::refuse(FactaError::INVALID_REQUEST, $label . '.numeroDocumento only goes on a note (05/06), as a string.', ['field' => $label . '.numeroDocumento']);
+                }
             }
         }
         if ($saleLines === 0) {
@@ -130,8 +150,9 @@ final class NonTaxedLines
     }
 
     /**
-     * A sale line that may carry an amount: only an explicit zero `cantidad` or `precioUni` is known locally
-     * not to. A `productId` line without a price is resolved by the server, which decides.
+     * A sale line that may carry an amount: the server's rule is `cantidad × precioUni − montoDescu > 0`,
+     * applied locally only when both numbers are on the line. A `productId` line without a price is resolved
+     * by the server, which decides.
      *
      * @param mixed $item
      */
@@ -143,8 +164,17 @@ final class NonTaxedLines
         if (!is_array($item)) {
             return false;
         }
-        foreach (['cantidad', 'precioUni'] as $field) {
-            if (isset($item[$field]) && (is_int($item[$field]) || is_float($item[$field])) && $item[$field] == 0) {
+        $cantidad = $item['cantidad'] ?? null;
+        $precioUni = $item['precioUni'] ?? null;
+        $isNumber = static function ($value): bool {
+            return is_int($value) || is_float($value);
+        };
+        if ($isNumber($cantidad) && $isNumber($precioUni)) {
+            $discount = $item['montoDescu'] ?? 0;
+            return $cantidad * $precioUni - ($isNumber($discount) ? $discount : 0) > 0;
+        }
+        foreach ([$cantidad, $precioUni] as $value) {
+            if ($isNumber($value) && $value == 0) {
                 return false;
             }
         }

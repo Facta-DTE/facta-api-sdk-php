@@ -152,9 +152,10 @@ $result = $facta->issue([
 $result['totales']['totalNoGravado']; // 50000, already inside totalPagar
 ```
 
-* The line is `descripcion`, `noGravado` (> 0 charge, < 0 credit; never 0, at most 8 decimals), `tipoItem`
+* The line is `descripcion`, `noGravado` (> 0 charge, < 0 credit; never 0, below 1e11 in absolute value, at most 8 decimals), `tipoItem`
   (1 bien, 2 servicio, 3 ambos; **required**, Facta never picks it) and an optional `codigo`. It cannot carry
-  `cantidad`, `precioUni`, `montoDescu`, `tipoVenta` or `productId` (`invalid_request` naming the field).
+  `cantidad`, `precioUni`, `montoDescu`, `tipoVenta` or `productId` (`invalid_request` naming the field), not even
+  as `null` (json_encode() sends it); `uniMedida` may be left out, and if sent it must be 99.
 * Facta writes it as the Manual says (cantidad 1, `uniMedida` 99, `precioUni` 0, every sale column and tax 0) and
   adds it **only** to `resumen.totalNoGravado` and `totalPagar`; VAT, subtotal, discounts and the withholding and
   perception bases do not move. `pagos` must add up to the new total to pay.
