@@ -36,8 +36,9 @@ openapi: 3.1.0
 #      puede reescribirse. Un cliente que haga `switch` sobre `message` está mal
 #      escrito.
 #   4. `Idempotency-Key` es OBLIGATORIA en las tres rutas que gastan
-#      correlativo. Alcance `(llave, Idempotency-Key)`, TTL 24 h, y reusar la
-#      misma llave con otro cuerpo es 422 y no una repetición silenciosa.
+#      correlativo. Alcance `(llave, Idempotency-Key)`. La respuesta guardada
+#      dura 7 días, pero la llave queda atada a su venta PARA SIEMPRE: la misma
+#      llave con otro cuerpo es 422 y no una repetición silenciosa.
 #   5. Un rechazo del MH es **422**, no 502: Hacienda LEYÓ el documento y lo
 #      negó, así que es un problema de los datos de quien llama. Y la respuesta
 #      nombra el correlativo que se gastó, porque el §167 permite corregir con
@@ -334,6 +335,11 @@ paths:
         escrituras ahora; una reserva concurrente vuelve a comprobar el cupo.
         `accessUntil` describe la ventana de lectura existente, no una promesa
         de respaldo. Se conservan los estados de destinos BYOS verificados.
+
+        `sinConfirmar` cuenta los documentos sellados que todavía solo tienen la
+        copia temporal cifrada de Facta y la fecha en que se borrará la primera
+        (`primeroSeBorraEl`); la lista está en `GET /v1/storage/unconfirmed`.
+        `null` si no se pudo calcular ahora.
       security: [{ FactaApiKey: [] }]
       responses:
         "200":
@@ -411,6 +417,7 @@ paths:
         "401": { $ref: "#/components/responses/NoAutorizado" }
         "403": { $ref: "#/components/responses/Prohibido" }
         "404": { $ref: "#/components/responses/NoEnElArea" }
+        "409": { description: "`nothing_to_repair_from`: la copia temporal cifrada ya se borró y Facta no tiene otra copia de la que reescribir. Recupere el JSON de su propio almacenamiento.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "429": { $ref: "#/components/responses/Techo" }
         "503": { $ref: "#/components/responses/NoDisponible" }
 
@@ -455,6 +462,13 @@ paths:
         mayúsculas) como nombre: `DTE/pruebas/YYYY/MM/<CODIGO-DEL-EVENTO>.json|pdf`
         en pruebas y `DTE/YYYY/MM/<CODIGO-DEL-EVENTO>.json|pdf` en producción.
         Anunciada por `capabilities.byosCopyReport` en `/v1/storage/status`.
+
+        **Marca el documento como guardado.** Informar la copia de un DOCUMENTO
+        (no la de un evento de anulación o de retorno) lo marca como guardado
+        (`por: sdk_report`, «informado», no verificado): queda fuera de los correos
+        pero su copia temporal cifrada **conserva la fecha de borrado de 30 días**;
+        solo la adelanta a 2 días una copia que Facta mismo verifique. Ver
+        `GET /v1/storage/unconfirmed`.
       security: [{ FactaApiKey: [] }]
       parameters:
         - name: codigoGeneracion
@@ -512,8 +526,8 @@ paths:
 
         **La regla.** Cada documento sellado deja en Facta una *copia temporal
         cifrada*. Es una red, no su archivo: se borra **30 días después de
-        sellado**, o **2 días después de que se marque como guardado**. Un
-        documento se marca guardado cuando Facta verifica una copia suya
+        sellado**, o **2 días después de que Facta verifique una copia suya**.
+        Un informe no adelanta la fecha. Un documento se marca guardado cuando Facta verifica una copia suya
         (Almacenamiento Facta, o un destino propio que Facta escribió) o cuando
         usted lo informa con `POST /v1/dte/{codigoGeneracion}/storage-confirmation`
         (o con el reporte automático del SDK a `/v1/storage/copies/{cg}/byos`).
@@ -558,9 +572,10 @@ paths:
       operationId: confirmarAlmacenamiento
       summary: Informar que ya guardó el JSON de un documento sellado
       description: |
-        **Alcance: `issue`.** Marca el documento como guardado: la copia temporal
-        cifrada de Facta se borrará **2 días después** en lugar de a los 30 días
-        (ver `GET /v1/storage/unconfirmed`). Úsela cuando guarda en un lugar donde
+        **Alcance: `issue`.** Marca el documento como guardado (queda fuera de los
+        correos), pero la copia temporal cifrada de Facta **conserva su fecha de
+        borrado de 30 días**: un informe no es una copia que Facta haya
+        verificado (ver `GET /v1/storage/unconfirmed`). Úsela cuando guarda en un lugar donde
         Facta no tiene credenciales (su disco, su base de datos). Si el SDK
         escribió en un destino sincronizado, el reporte `/v1/storage/copies/{cg}/byos`
         ya marca el documento y esta llamada no hace falta.
@@ -770,6 +785,8 @@ paths:
         mismas advertencias vienen en `error.details.advertencias`. Revise la
         primera respuesta de su integración: un campo ignorado es un descuento,
         un pago o un régimen que el documento no lleva.
+        Esto es permanente: un campo desconocido es solo una advertencia y
+        Facta DTE no lo convertirá en un rechazo.
 
         Devuelve el JWS firmado además del documento: es lo que el cliente
         archiva, porque volver a serializar el JSON después no reproduce los
@@ -860,6 +877,25 @@ paths:
                       cantidad: 1
                       precioUni: 30
                       tipoVenta: no_sujeta
+              facturaConDescuentoGlobalPorcentaje:
+                summary: FE con un descuento global del 10 % (toda la venta)
+                value:
+                  tipoDte: "01"
+                  items:
+                    - descripcion: "Café"
+                      cantidad: 10
+                      precioUni: 2
+                  descuentoGlobal: { modo: porcentaje, valor: 10 }
+              creditoFiscalConDescuentoGlobalMonto:
+                summary: CCF con un descuento global de $12.50, sin IVA como precioUni
+                value:
+                  tipoDte: "03"
+                  receptor: { customerId: "374114b6-e957-4c7a-8911-dd6381b1e0ea" }
+                  items:
+                    - descripcion: "Integración de la API de facturación electrónica"
+                      cantidad: 1
+                      precioUni: 125
+                  descuentoGlobal: { modo: monto, valor: 12.5 }
       responses:
         "200":
           description: |
@@ -883,7 +919,9 @@ paths:
         "400":
           description: |
             Cuerpo mal formado, ausente, de más de 1 MB, o falta
-            `Idempotency-Key`.
+            `Idempotency-Key`. También un `descuentoGlobal` mal formado o mayor
+            que el subtotal (`invalid_request`, `details.field`), y
+            `global_discount_not_supported` cuando va en una nota (05/06).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1450,6 +1488,14 @@ paths:
         `kind=ticket` (un evento de retorno no tiene ticket), contesta 404
         `return_pdf_unavailable`.
 
+        **La copia temporal tiene fecha de borrado.** Ese rearmado sale de la
+        copia temporal cifrada de Facta, que se borra 30 días después de sellado
+        (2 días después de que Facta verifica una copia del documento: ver
+        `GET /v1/storage/unconfirmed`). Si el documento tiene una copia en
+        Almacenamiento Facta se sirve de ahí, también después; si no, pasada la
+        fecha esta ruta contesta **`410 temporary_copy_expired`**. Guarde y
+        confirme cada documento mientras tanto.
+
         Lo que NO puede rearmar son los documentos emitidos desde la app: esos
         viajan cifrados con una llave que vive en un navegador y que ningún
         servidor tiene. La respuesta entonces es la misma que si no existieran.
@@ -1537,6 +1583,7 @@ paths:
         "403": { $ref: "#/components/responses/Prohibido" }
         "404": { $ref: "#/components/responses/NoEnElArea" }
         "409": { description: "`not_sealed`: el documento está en contingencia y todavía no tiene sello, así que no tiene Archivo DTE. `details` trae `estado` y la pista `raw=true`.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "410": { description: "`temporary_copy_expired`: la copia temporal cifrada ya se borró y Facta no tiene otra copia. Búsquelo en su propio almacenamiento.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "429": { $ref: "#/components/responses/Techo" }
         "503": { $ref: "#/components/responses/NoDisponible" }
 
@@ -1698,6 +1745,156 @@ paths:
         "401": { $ref: "#/components/responses/NoAutorizado" }
         "403": { $ref: "#/components/responses/Prohibido" }
         "429": { $ref: "#/components/responses/Techo" }
+
+  /v1/dte/pendientes:
+    get:
+      tags: [Consulta]
+      operationId: listarDocumentosPendientes
+      summary: Documentos firmados que Hacienda todavía no ha contestado
+      description: |
+        **Alcance: `query`.**
+
+        Un documento está **pendiente** cuando Facta ya lo firmó y gastó su
+        correlativo, pero Hacienda no ha dicho ni sí ni no. Le pasa cuando una
+        emisión terminó en `202 contingencia`, en `503 service_unavailable`, en
+        un corte de conexión, o con la advertencia `indice_pendiente` /
+        `reserva_sin_asentar`. **Antes de emitir otra vez, mire esta lista:**
+        emitir de nuevo crea OTRA venta, con otro código y otro correlativo.
+
+        Devuelve solo datos del documento (código, correlativo, tipo, fecha,
+        total, antigüedad, última respuesta de Hacienda y plazo): nunca el
+        documento ni el receptor. Orden: el más antiguo primero. Solo ve las de
+        la empresa y el ambiente de la llave.
+
+        Cada fila dice si **`reintentable`** desde la API. Los documentos que
+        emitió la aplicación aparecen, pero solo la aplicación puede abrirlos:
+        se reintentan desde Documentos → Pendientes con Hacienda.
+
+        `plazo.requiereContingencia` es `true` cuando pasaron más de 24 horas
+        desde la firma: ya no es el camino normal de transmisión y conviene
+        declarar el Evento de Contingencia desde la aplicación. Hacienda decide;
+        Facta pregunta antes de enviar.
+      security:
+        - FactaApiKey: []
+      parameters:
+        - name: estado
+          in: query
+          required: false
+          schema: { type: string, enum: [firmado, rechazado], default: firmado }
+          description: "`firmado` (el valor por defecto): pendientes. `rechazado`: los que Hacienda negó y esperan corrección."
+        - name: tipoDte
+          in: query
+          required: false
+          schema: { type: string, pattern: "^[0-9]{2}$" }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+          description: El `siguiente` de la página anterior. Opaco.
+      responses:
+        "200":
+          description: Una página, la más antigua primero. `siguiente` es `null` cuando no hay más.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pendientes, siguiente]
+                properties:
+                  pendientes:
+                    type: array
+                    items: { $ref: "#/components/schemas/DocumentoPendiente" }
+                  siguiente: { type: string, nullable: true }
+              example:
+                pendientes:
+                  - codigoGeneracion: 7875BC7A-9580-441D-94E4-FA455E9D8BD0
+                    numeroControl: DTE-01-M001P001-000000000000417
+                    tipoDte: "01"
+                    estado: firmado
+                    modo: transitorio
+                    fecEmi: "2026-10-30"
+                    totalPagar: 11.3
+                    firmadoEn: "2026-10-30T17:41:02Z"
+                    antiguedadSegundos: 840
+                    intentos: 0
+                    ultimaRespuestaMh: null
+                    plazo: { venceEn: "2026-10-31T17:41:02Z", vencido: false, requiereContingencia: false }
+                    reintentable: true
+                    motivoNoReintentable: null
+                siguiente: null
+        "400": { description: "`limit`, `estado`, `tipoDte` o `cursor` inválidos.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/NoAutorizado" }
+        "403": { $ref: "#/components/responses/Prohibido" }
+        "429": { $ref: "#/components/responses/Techo" }
+        "503": { $ref: "#/components/responses/NoDisponible" }
+
+  /v1/dte/{codigoGeneracion}/reintentar:
+    post:
+      tags: [Emisión]
+      operationId: reintentarDocumentoPendiente
+      summary: Terminar un documento pendiente sin crear uno nuevo
+      description: |
+        **Alcance: `issue`.** Necesita la misma contraseña del vault de firma
+        (`X-Facta-Sign-Key`) que una emisión: de ahí salen las credenciales de
+        Hacienda. **No necesita `Idempotency-Key`**: la ruta es segura de repetir.
+
+        **Esta ruta nunca firma ni numera.** Reenvía los mismos bytes firmados
+        (mismo `codigoGeneracion`, mismo `numeroControl`) y, antes de enviar nada,
+        le pregunta a Hacienda qué sabe de ese código:
+
+        · Hacienda ya lo **selló** → no se reenvía nada. Se completa el registro
+          en Facta DTE y se cierra el correlativo. `via: consulta`.
+        · Hacienda **no lo recibió** (su respuesta `999`) → se reenvían los
+          mismos bytes. Si lo sella, `via: retransmision`.
+        · Hacienda lo **rechazó** → `422 mh_rejected` con sus palabras; el
+          correlativo queda registrado como rechazado. Corregir es una petición
+          nueva que reutiliza ese número (§167): no es esta ruta.
+        · Hacienda **no contestó** → `202 pendiente`; no cambió nada; repita más
+          tarde.
+
+        **No se duplica**: un documento tiene un único código; Hacienda rechaza
+        un segundo envío del mismo código («YA EXISTE»); y dos reintentos a la vez
+        no transmiten dos veces (el segundo recibe `409 retry_in_progress`).
+        Repetir sobre un documento ya sellado no hace nada.
+
+        Solo documentos que firmó la API. Uno que emitió la aplicación responde
+        `409 document_not_retryable` (`details.motivo: documento_de_la_aplicacion`).
+      security:
+        - FactaApiKey: []
+      parameters:
+        - name: codigoGeneracion
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          example: 7875BC7A-9580-441D-94E4-FA455E9D8BD0
+      responses:
+        "200":
+          description: |
+            Sellado. `via` dice cómo: `consulta` (Hacienda ya lo tenía),
+            `retransmision` (se reenviaron los mismos bytes) o `ya_asentado`
+            (ya estaba terminado; no se hizo nada). Con `advertencias`
+            (`indice_pendiente` / `reserva_sin_asentar`) la respuesta trae el
+            `documento` y el `jws`: guárdelos y repita esta llamada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReintentoSellado" }
+        "202":
+          description: Hacienda no contestó (o contestó sin decidir). No cambió nada. Repita más tarde con esta misma ruta; **no emita uno nuevo**.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReintentoPendiente" }
+        "400": { description: El código no tiene forma de UUID., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/NoAutorizado" }
+        "403": { $ref: "#/components/responses/Prohibido" }
+        "404": { description: No existe en la empresa y el ambiente de la llave., content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: "`retry_in_progress` (otro reintento de este documento está en curso; `Retry-After`), `document_not_retryable` (`details.motivo`: `documento_de_la_aplicacion`, `sin_copia_firmada` o `sin_documento_firmado`) o `sign_vault_missing`.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "422": { description: "`mh_rejected`: Hacienda rechazó el documento; `details` trae sus palabras y el correlativo.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "424": { description: "`mh_auth_failed`: Hacienda no aceptó las credenciales de transmisión de la empresa.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "429": { $ref: "#/components/responses/Techo" }
+        "503": { $ref: "#/components/responses/NoDisponible" }
 
   /v1/customers:
     get:
@@ -2462,6 +2659,15 @@ paths:
         `Idempotency-Key` opcional, para siempre: repetir (con otro sobre
         también) devuelve el mismo borrador; la misma llave con otro contenido es
         `422 idempotency_key_reuse` y nombra el borrador.
+
+        **Campos que Facta DTE no conoce:** igual que en `POST /v1/dte`, un
+        campo mal escrito no se rechaza: la respuesta trae `advertencias` con
+        `codigo: campo_desconocido`, el `campo` exacto y, cuando es obvio, la
+        `sugerencia`, más la cabecera `Facta-Warning`. **Ese campo no queda en
+        el borrador** (se guarda la solicitud ya resuelta), así que corríjalo y
+        guarde una versión nueva antes de emitir. Si el borrador se rechaza por
+        otra razón, las advertencias van en `error.details.advertencias`. Una
+        repetición con la misma `Idempotency-Key` las vuelve a dar.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKeyOpcional"
       requestBody:
@@ -2475,9 +2681,13 @@ paths:
       responses:
         "201":
           description: Borrador guardado.
+          headers:
+            Facta-Warning: { $ref: "#/components/headers/FactaWarning" }
           content: { application/json: { schema: { $ref: "#/components/schemas/BorradorEstado" } } }
         "200":
           description: Repetición.
+          headers:
+            Facta-Warning: { $ref: "#/components/headers/FactaWarning" }
           content: { application/json: { schema: { $ref: "#/components/schemas/BorradorEstado" } } }
         "400": { $ref: "#/components/responses/CatalogoPeticionInvalida" }
         "401": { $ref: "#/components/responses/NoAutorizado" }
@@ -2546,7 +2756,8 @@ paths:
         **Alcance: `draft`.** Pide `If-Match: <versión>`. Se rechaza si una
         persona de la empresa lo tiene abierto en la app, se está emitiendo o ya
         se resolvió. Mismo cuerpo que al crearlo; la versión nueva reemplaza a la
-        anterior.
+        anterior. Un campo que Facta DTE no conoce se advierte como al crearlo
+        (`advertencias` y `Facta-Warning`) y no queda en la versión nueva.
       parameters:
         - $ref: "#/components/parameters/BuzonId"
         - name: If-Match
@@ -2565,6 +2776,8 @@ paths:
       responses:
         "200":
           description: Nueva versión.
+          headers:
+            Facta-Warning: { $ref: "#/components/headers/FactaWarning" }
           content: { application/json: { schema: { $ref: "#/components/schemas/BorradorEstado" } } }
         "400": { $ref: "#/components/responses/CatalogoPeticionInvalida" }
         "401": { $ref: "#/components/responses/NoAutorizado" }
@@ -2617,7 +2830,9 @@ paths:
         **Alcance: `issue`** (y `draft`), más `X-Facta-Sign-Key`. El cuerpo es el
         de `POST /v1/dte` más la `version` del borrador. Gasta un correlativo;
         `Idempotency-Key` obligatoria, igual que allí. Responde como esa ruta
-        más `borradorId`. Una sola puerta evita la doble emisión (`409
+        más `borradorId`, con las mismas `advertencias` (un campo desconocido en
+        este cuerpo es `campo_desconocido` y `Facta-Warning`, nunca un `400`;
+        `version` es del borrador y no se advierte). Una sola puerta evita la doble emisión (`409
         draft_issuing` o `draft_claimed`, sin gastar nada); un rechazo de
         Hacienda cuenta como emitido y el borrador no se reabre.
       parameters:
@@ -2632,6 +2847,8 @@ paths:
       responses:
         "200":
           description: Emitido (sellado o en contingencia), como `POST /v1/dte`.
+          headers:
+            Facta-Warning: { $ref: "#/components/headers/FactaWarning" }
           content: { application/json: { schema: { type: object } } }
         "400": { $ref: "#/components/responses/CatalogoPeticionInvalida" }
         "401": { $ref: "#/components/responses/NoAutorizado" }
@@ -2771,7 +2988,7 @@ components:
         (`#/components/parameters/IdempotencyKey`): misma cadena y mismo cuerpo
         devuelve la respuesta guardada con `Idempotency-Replayed: true`; otro
         cuerpo es `422 idempotency_key_reuse` (salvo en las altas de cliente y
-        producto, donde actualiza el registro que la llave creó); TTL de 24 h.
+        producto, donde actualiza el registro que la llave creó). La respuesta guardada dura 7 días.
     BuzonId:
       name: id
       in: path
@@ -2926,8 +3143,22 @@ components:
           `actualizado: true`; solo si esa llave no guarda un registro vuelve el 422.
         · **Mientras la primera está en vuelo**, la segunda es 409
           `idempotency_in_flight` — no se encola. El cliente reintenta.
-        · **TTL 24 h.** Pasado eso la cadena queda libre: un reintento un día
-          después es una venta nueva, no un reintento.
+        · **La llave queda atada a su venta para siempre.** Desde el 30-oct-2026
+          esta regla es más estricta que antes: una llave que ya dio origen a un
+          documento NO se libera nunca. La **respuesta guardada** se conserva
+          7 días; después se borra, pero Facta recuerda qué solicitud y qué
+          documento eran.
+        · **Repetir con el mismo cuerpo pasados los 7 días** devuelve el
+          documento que ya existe, reconstruido desde sus copias (estado, sello,
+          totales; el archivo se baja con `GET /v1/dte/{codigoGeneracion}/file`),
+          con `Idempotency-Replayed: true` y `Idempotency-Replay-Source: rebuilt`.
+          **Nunca emite uno nuevo.**
+        · **Repetir con otro cuerpo es 422 `idempotency_key_reuse` siempre**,
+          también pasados los 7 días.
+        · **Una llave por venta, para siempre.** No reutilice una llave para otra
+          venta aunque haya pasado mucho tiempo. Si perdió la respuesta, repita
+          con la misma llave y el mismo cuerpo, o consulte el documento: nunca
+          invente una llave nueva para «volver a intentar» la misma venta.
 
   headers:
     RateLimitLimit:
@@ -3108,7 +3339,8 @@ components:
     BuzonInvalido:
       description: |
         `validation_failed`, `content_hash_mismatch` o `idempotency_key_reuse`
-        (`details.borradorId`).
+        (`details.borradorId`). Si el cuerpo traía campos que Facta DTE no
+        conoce, `details.advertencias` los nombra (`campo_desconocido`).
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     NoDisponible:
       description: |
@@ -3264,6 +3496,13 @@ components:
                 - key_expired
                 - key_inactive
                 - forbidden_scope
+                - fse_withholding_legacy_conflict
+                - fse_withholding_mode_invalid
+                - fse_withholding_mode_required
+                - global_discount_not_supported
+                - fse_withholding_not_supported
+                - fse_withholding_selection_invalid
+                - fse_withholding_selection_required
                 - dte_type_not_allowed
                 - ip_not_allowed
                 - environment_not_allowed
@@ -3331,6 +3570,8 @@ components:
                 - temporary_copy_expired
                 - nothing_to_repair_from
                 - storage_hash_mismatch
+                - document_not_retryable
+                - retry_in_progress
                 - service_unavailable
                 - internal_error
             message:
@@ -3404,6 +3645,21 @@ components:
         editado: { type: boolean }
         sobre: { type: object, nullable: true }
         contenido: { type: object, description: "La solicitud ya resuelta, solo si esta llave tiene acceso a la clave de datos de la empresa." }
+        advertencias:
+          type: array
+          description: |
+            Solo al crear o guardar una versión (`POST /v1/drafts`, `PUT
+            /v1/drafts/{id}`), y solo cuando hay algo que revisar: hoy,
+            `campo_desconocido` (ver `DteSellado.advertencias`). El campo
+            nombrado se ignoró y **no forma parte del borrador**.
+          items:
+            type: object
+            required: [codigo, mensaje]
+            properties:
+              codigo: { type: string, enum: [campo_desconocido] }
+              mensaje: { type: string }
+              campo: { type: string }
+              sugerencia: { type: string }
     SolicitudBorrador:
       type: object
       required: [version, tipoDte, items]
@@ -3653,7 +3909,7 @@ components:
         línea como el resumen llevan el tributo C3 con valor 0 — un `null` ahí lo
         rechaza Hacienda con «DEBE PROPORCIONAR UN VALOR».
       properties:
-        tipoItemExpor: { type: integer, enum: [1, 2, 3], description: 1 bienes, 2 servicios, 3 ambos. }
+        tipoItemExpor: { type: integer, enum: [1, 2, 3], description: "1 bienes (también bienes y servicios), 2 servicios. 3 se acepta como alias de 1 (Hacienda no admite el 3): se envía como 1 y la respuesta lleva la advertencia `tipo_item_expor_mapped`." }
         incoterms:
           type: string
           description: |
@@ -3666,23 +3922,32 @@ components:
           type: string
           nullable: true
           description: |
-            Recinto fiscal, **código de CAT-027** (`01`, `02`, … `99`); `null`
-            u omitido en exportación de servicios. Un código que no es del
+            Recinto fiscal: la **aduana o zona franca concreta** por donde sale
+            la mercancía, **código de CAT-027** (`01` Terrestre San Bartolo,
+            `02` Marítima de Acajutla, `03` Aérea de Comalapa … lista completa
+            en `SolicitudDte`). **Obligatorio en bienes** (`tipoItemExpor` 1, o 3 que se envía
+            como 1): sin él es `400 invalid_request` con `details.field`, sin gastar
+            correlativo; `null` u omitido solo en exportación de servicios. Un código que no es del
             catálogo es `422 validation_failed` con `details.supported`, sin
             gastar correlativo.
         tipoRegimen:
           type: string
           nullable: true
           enum: ["EX-1", "EX-2", "EX-3", "TA-1", null]
-          description: Tipo de régimen, **código de CAT-033**. Mismo trato que `recintoFiscal`.
+          description: |
+            Tipo de régimen, **código de CAT-033** (`EX-1` definitiva, `EX-2`
+            temporal, `EX-3` reexportación, `TA-1` tránsito aduanero).
+            **Obligatorio en bienes** (`tipoItemExpor` 1, o 3 que se envía como 1): Hacienda
+            rechaza el documento sin él. Mismo trato que `recintoFiscal`.
         regimen:
           type: string
           nullable: true
           description: |
             Régimen de exportación, **código de CAT-028** (`1000.000`,
-            `1040.000`, …). Se acepta también la forma compuesta de hasta 13
-            caracteres `<CAT-033>.<CAT-028>` (por ejemplo `EX-1.1000.000`). Un
-            código que no es del catálogo —por ejemplo `EX-1` solo, que es un
+            `1040.000`, …). **Obligatorio en bienes** (`tipoItemExpor` 1, o 3 que se envía como 1).
+            En servicios se acepta también la forma compuesta de hasta 13
+            caracteres `<CAT-033>.<CAT-028>` (por ejemplo `EX-1.1000.000`); en
+            bienes solo el código llano. Un código que no es del catálogo —por ejemplo `EX-1` solo, que es un
             tipo de régimen— es `422 validation_failed` con `details.supported`,
             sin gastar correlativo.
         flete:
@@ -3785,6 +4050,9 @@ components:
           example: 2.5
         codigo: { type: string, nullable: true }
         tipoItem: { type: integer, description: "CAT-011. 1 bien, 2 servicio, 3 ambos, 4 otro.", default: 2 }
+        applyIncomeWithholding:
+          type: boolean
+          description: "Solo en modo FSE por línea; obligatorio en cada línea. El servidor nunca deriva esta decisión de tipoItem."
         uniMedida: { type: integer, description: "CAT-014. 59 = unidad.", default: 59 }
         tipoVenta:
           type: string
@@ -3827,12 +4095,26 @@ components:
             no llega a la API: envíe `tipoVenta` en la línea. Sin él, la línea
             se emite como `gravada`.
 
-            **Retención de renta.** `aplicarReteRenta` junto a una línea
-            `exenta` o `no_sujeta` se rechaza con
-            `422 retention_mixed_class_unsupported`: la base de la retención
-            del art. 156 del Código Tributario no depende del IVA, pero para
-            ese caso todavía no está confirmada, y Facta prefiere no firmar
-            una cifra posiblemente corta.
+            **Retención de renta en la FSE (14).** `aplicarReteRenta` es
+            opcional: omitido o `false` no aplica retención; `true` calcula la
+            tasa vigente sobre el subtotal completo después de los descuentos
+            por línea. No selecciona líneas por `tipoItem`. Los bienes usados
+            como insumos de un servicio forman parte del subtotal. Una compra
+            solo de bienes no activa la retención automáticamente por no llevar
+            IVA. Para retener solo sobre algunas líneas (por ejemplo, un
+            servicio y una compra de bienes realmente independiente en el mismo
+            documento), no use `aplicarReteRenta`: envíe
+            `incomeWithholding: { "mode": "per_line" }` y un
+            `applyIncomeWithholding` booleano en cada línea, cuando
+            `GET /v1/status` anuncie `capabilities.fseIncomeWithholdingPerLine`.
+            La retención se calcula sobre las líneas marcadas. El tratamiento de
+            esa compra independiente sigue pendiente de confirmación de la DGII:
+            confírmelo con su contador antes de emitir.
+
+            Enviar `aplicarReteRenta: true` junto a una línea `exenta` o
+            `no_sujeta` se rechaza con `422 retention_mixed_class_unsupported`
+            antes de reservar un correlativo. La FSE tampoco permite usar
+            `tipoVenta` para distinguir bienes de servicios.
         numeroDocumento:
           type: string
           nullable: true
@@ -3854,10 +4136,126 @@ components:
         | **precio de la línea** | con IVA | sin IVA | sin IVA | sin IVA (tasa cero) | el precio, tal cual |
         | **receptor** | opcional | inscrito | inscrito | extranjero | el VENDEDOR |
         | **campos propios** | `aplicarRetencionIva` | `aplicarRetencionIva`, `aplicarPercepcionIva` | `documentosRelacionados`, y `numPagoElectronico` solo en 06 | `exportacion` | `aplicarReteRenta` |
+        | **`descuentoGlobal`** | sí, con IVA | sí, sin IVA | no (`400 global_discount_not_supported`) | sí | sí |
 
         Mandar el campo propio de un tipo en otro es `400`, no un campo
         ignorado en silencio: si alguien manda `aplicarReteRenta` en una
         factura, cree que está reteniendo y no está reteniendo nada.
+
+        ## Forma de pago, tipo por tipo
+
+        El pago **no viaja aparte**: se escribe en este mismo cuerpo y Facta lo
+        convierte en `documento.resumen.pagos`. No hay otro endpoint ni otro
+        momento para informarlo.
+
+        | Caso | Qué manda | Qué queda en `resumen.pagos` |
+        |---|---|---|
+        | **Contado, un solo medio** (01, 03, 11, 14) | `formaPago` (CAT-017); sin él, `01` (`05` en el 11) | una fila: `{ codigo, montoPago = total a pagar, referencia: null, plazo: null, periodo: null }` |
+        | **Contado, varios medios** (01, 03, 11, 14) | `pagos[]` y **no** `formaPago`; la suma de `montoPago` = total a pagar, al centavo | tal cual sus filas, cada una con `plazo` y `periodo` en `null` |
+        | **Crédito** (`condicionOperacion` 2) | `formaPago` + `plazo` (CAT-018) + `periodo`; **nunca** `pagos` | una fila con `montoPago` = total a pagar, más `plazo` y `periodo` |
+        | **Nota de crédito (05) / de débito (06)** | nada: no liquidan, el esquema oficial no tiene `resumen.pagos`; `formaPago` se ignora y `pagos` es `400`. La 06 puede llevar `numPagoElectronico` | el campo no existe |
+
+        `montoPago` es siempre el **total a pagar** (`resumen.totalPagar`), es
+        decir, ya con retenciones y percepción aplicadas. Ejemplo de una
+        factura (01) de $25.00 a crédito a 30 días, con `formaPago: "05"`,
+        `condicionOperacion: 2`, `plazo: "01"`, `periodo: 30`:
+
+        ```json
+        "pagos": [
+          { "codigo": "05", "montoPago": 25, "referencia": null, "plazo": "01", "periodo": 30 }
+        ]
+        ```
+
+        Y la misma factura al contado con dos medios (`pagos` de
+        `[{ "codigo": "01", "montoPago": 10 }, { "codigo": "02", "montoPago": 15, "referencia": "VOUCHER-0042" }]`):
+
+        ```json
+        "pagos": [
+          { "codigo": "01", "montoPago": 10, "referencia": null, "plazo": null, "periodo": null },
+          { "codigo": "02", "montoPago": 15, "referencia": "VOUCHER-0042", "plazo": null, "periodo": null }
+        ]
+        ```
+
+        Una venta a crédito que manda `pagos` es `422 validation_failed` antes
+        de gastar correlativo: Hacienda no publica cómo se reparte un plazo
+        entre varios medios. Se resuelve con `formaPago` + `plazo` + `periodo`.
+
+        ## Exportación (11): lo que Hacienda exige y el esquema marca opcional
+
+        En una exportación de **bienes** (`tipoItemExpor` 1, o 3 que se envía como 1) Hacienda exige
+        `exportacion.tipoRegimen`, `exportacion.regimen` y
+        `exportacion.recintoFiscal`, aunque su esquema los marque opcionales:
+        sin `tipoRegimen` **Hacienda rechaza el documento** y sin los otros dos
+        lo sella con una advertencia (prueba en vivo, ambiente 00, 30-oct-2026).
+        **Facta los exige**: falta cualquiera de los tres y la respuesta es
+        `400 invalid_request` con `details.field`, sin gastar correlativo. En
+        servicios (`tipoItemExpor` 2) pueden ir `null`.
+
+        Hacienda **no admite `tipoItemExpor` 3** (CAT-011 no tiene los códigos 3
+        y 4; prueba en vivo, ambiente 00, 31-oct-2026: el 3 se rechazó y el
+        mismo documento con 1 se selló). Para una exportación de bienes y
+        servicios use 1. Si manda 3, Facta lo acepta como alias, lo envía como
+        1, exige los datos de aduana y la respuesta lleva
+        `advertencias: [{ codigo: "tipo_item_expor_mapped", mensaje }]`.
+
+        - `recintoFiscal` es **una aduana o zona franca concreta**, código de
+          CAT-027: 01 Terrestre San Bartolo, 02 Marítima de Acajutla, 03 Aérea
+          de Comalapa, 04 Terrestre Las Chinamas, 05 Terrestre La Hachadura, 06
+          Terrestre Santa Ana, 07 Terrestre San Cristóbal, 08 Terrestre
+          Anguiatú, 09 Terrestre El Amatillo, 10 Marítima La Unión, 11 Terrestre
+          El Poy, 12 Terrestre Metalío, 15 Fardos Postales, 16 Z.F. San Marcos,
+          17 Z.F. El Pedregal, 18 Z.F. San Bartolo, 20 Z.F. Exportsalva, 21 Z.F.
+          American Park, 23 Z.F. Internacional, 24 Z.F. Diez, 26 Z.F. Miramar,
+          27 Z.F. Santo Tomás, 28 Z.F. Santa Tecla, 29 Z.F. Santa Ana, 30 Z.F.
+          La Concordia, 31 Aérea Ilopango, 32 Z.F. Pipil, 33 Puerto Barillas, 34
+          Z.F. Calvo Conservas, 35 Feria Internacional, 36 Aduana El Papalón, 37
+          Z.F. Sam-Li, 38 Z.F. San José, 39 Z.F. Las Mercedes, 40 Z.F. EMCO, 41
+          Z.F. Gigante, 42 Z.F. NOVABES, 43 Z.F. INHDELVA, 71 Aldesa, 72 Agdosa
+          Merliot, 73 Bodesa, 76 Delegación DHL, 77 Transauto, 80 Nejapa, 81
+          Almaconsa, 83 Agdosa Apopa, 85 Gutiérrez Courier y Cargo, 99 San
+          Bartolo Envío Hn/Gt.
+        - `tipoRegimen` (CAT-033): `EX-1` Exportación definitiva, `EX-2`
+          Exportación temporal, `EX-3` Reexportación, `TA-1` Tránsito aduanero.
+        - `regimen` (CAT-028): `1000.000` (exportación definitiva, régimen
+          común). En bienes solo el código llano.
+
+        Exportación definitiva de bienes, completa:
+
+        ```json
+        "exportacion": {
+          "tipoItemExpor": 1,
+          "incoterms": "09",
+          "recintoFiscal": "02",
+          "tipoRegimen": "EX-1",
+          "regimen": "1000.000",
+          "flete": 150,
+          "seguro": 20
+        }
+        ```
+
+        ## Retención de renta (14), tal como funciona hoy
+
+        `aplicarReteRenta` es opcional: omitido o `false` no retiene; `true`
+        aplica la tasa vigente de renta al **subtotal completo** de la FSE
+        después de los descuentos por línea, y la resta del total a pagar
+        (`totalPagar = subTotal − reteRenta`). No selecciona líneas por
+        `tipoItem`: incluye los bienes usados como insumos de un servicio. Una
+        compra solo de bienes no queda sujeta automáticamente por no llevar
+        IVA. El monto se lee en `documento.resumen.reteRenta` y también en
+        `totales.reteRenta` de la respuesta. Nunca es automática: se pide.
+
+        **Retener solo sobre algunas líneas.** Envíe
+        `incomeWithholding: { "mode": "per_line" }` (en lugar de
+        `aplicarReteRenta`) y un `applyIncomeWithholding` booleano en **cada**
+        línea; el servidor nunca lo deduce de `tipoItem`. La retención es la
+        tasa vigente sobre la suma de las líneas marcadas, después de sus
+        descuentos: una compra de bienes de $100 sin marcar y un servicio de
+        $50 marcado dan `subTotal` 150, `reteRenta` 5 y `totalPagar` 145.
+        Disponible cuando `GET /v1/status` responde
+        `capabilities.fseIncomeWithholdingPerLine: true`; los errores
+        `fse_withholding_*` explican cada rechazo. El tratamiento de una compra
+        de bienes independiente mezclada con servicios sigue pendiente de
+        confirmación de la DGII: confírmelo con su contador.
       properties:
         tipoDte:
           type: string
@@ -3905,10 +4303,19 @@ components:
           type: boolean
           default: false
           description: |
-            Solo en el 14. Retención de renta del 10 % (art. 156 CT) sobre
-            servicios de una persona natural. **Nunca automática**: se pide.
-            No se puede combinar con líneas `exenta` o `no_sujeta`
-            (`422 retention_mixed_class_unsupported`).
+            Solo en el 14. Opcional: omitido o false deja la retención en cero;
+            true aplica la tasa vigente de renta al subtotal completo de la FSE
+            después de descuentos por línea (`items[].montoDescu`); la API no
+            admite un descuento global para la FSE. No selecciona líneas por `tipoItem`:
+            incluye bienes usados como insumos de un servicio. Una compra solo
+            de bienes no queda sujeta automáticamente por no llevar IVA. Para
+            retener solo sobre algunas líneas use `incomeWithholding` (modo
+            `per_line`) con `items[].applyIncomeWithholding`; las dos formas se
+            excluyen (`fse_withholding_legacy_conflict`). No es automática:
+            la integración la solicita expresamente. Al combinarla con una línea
+            `exenta` o `no_sujeta` se responde
+            `422 retention_mixed_class_unsupported` antes de reservar.
+            El monto se lee en `documento.resumen.reteRenta` y en `totales.reteRenta`.
         aplicarRetencionIva:
           type: boolean
           default: false
@@ -3929,6 +4336,58 @@ components:
             (`montoTotalOperacion + ivaPerci − ivaRete`) y no forma parte de
             `montoTotalOperacion`. **Nunca es automática**: se pide. En otro
             tipo es `400`.
+        descuentoGlobal:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [modo, valor]
+          properties:
+            modo:
+              type: string
+              enum: [monto, porcentaje]
+              description: "«monto» en dólares, «porcentaje» en puntos (10 = 10 %). Obligatorio: no tiene valor por omisión."
+            valor:
+              type: number
+              exclusiveMinimum: 0
+              multipleOf: 0.01
+              description: "Mayor que cero, con dos decimales como máximo. Un porcentaje no pasa de 100."
+          example: { modo: porcentaje, valor: 10 }
+          description: |
+            Solo en 01, 03, 11 y 14. El descuento de **toda la venta**, como lo
+            escribe la app: un monto o un porcentaje. Se aplica después de los
+            descuentos por línea (`items[].montoDescu`) y Facta lo reparte:
+
+            - **`porcentaje`**: el mismo porcentaje sobre cada tipo de venta
+              (gravada, exenta, no sujeta) y queda en
+              `resumen.porcentajeDescuento`.
+            - **`monto`**: en la **misma base de IVA que `precioUni`** de ese
+              tipo (con IVA en el 01, sin IVA en el 03 y el 11). Si hay varios
+              tipos de venta se reparte en proporción a cada uno y la suma
+              cuadra al centavo; `porcentajeDescuento` queda en 0.
+            - En el 11 todo cae en `descuGravada`; en el 14, en `resumen.descu`
+              (el único descuento global de la FSE).
+
+            El resultado se lee en `resumen.descuNoSuj`, `descuExenta`,
+            `descuGravada` (o `descu` en el 14) y `totalDescu`, y todo lo que
+            sigue se calcula ya descontado: IVA, `aplicarRetencionIva`,
+            `aplicarPercepcionIva`, `aplicarReteRenta`, `totalPagar` y la suma
+            que tiene que dar `pagos[]`.
+
+            Un descuento mayor que el subtotal es `400 invalid_request` con
+            `details.field: "descuentoGlobal"` y `details.subtotal`; un `modo`
+            mal escrito, un `valor` fuera de rango o cualquier otra clave dentro
+            del objeto es `400` sobre ese campo. En una nota de crédito (05) o
+            de débito (06) es `400 global_discount_not_supported`: sus montos
+            salen del documento que corrigen. `null` es lo mismo que omitirlo.
+            Ninguno de estos rechazos gasta correlativo. `GET /v1/status`
+            confirma el soporte con `capabilities.descuentoGlobal: true`.
+        incomeWithholding:
+          type: object
+          additionalProperties: false
+          required: [mode]
+          properties:
+            mode: { type: string, enum: [per_line] }
+          description: "Solo en FSE (14). Retiene renta solo sobre las líneas con applyIncomeWithholding true: la tasa vigente sobre la suma de esas líneas después de sus descuentos. Excluyente con aplicarReteRenta; todas las líneas requieren applyIncomeWithholding booleano explícito. Disponible cuando GET /v1/status anuncia capabilities.fseIncomeWithholdingPerLine. El tratamiento de una compra de bienes independiente mezclada con servicios sigue pendiente de confirmación de la DGII."
         condicionOperacion: { type: integer, enum: [1, 2, 3], default: 1, description: 1 contado, 2 crédito, 3 otro. }
         plazo:
           type: string
@@ -3948,7 +4407,7 @@ components:
             tarjeta de débito, 03 tarjeta de crédito, 04 cheque, 05
             transferencia o depósito bancario, 08 dinero electrónico, 09
             monedero electrónico, 11 bitcoin, 12 otras criptomonedas, 13
-            cuentas por pagar del receptor, 14 bonos o certificados de regalo,
+            cuentas por pagar del receptor, 14 giro bancario,
             99 otros. Sin él (u omitido o `null`) el servidor usa 01 (05 en la
             exportación). **Un código que no es del catálogo es
             `422 validation_failed` con `details.field` y `details.supported`,
@@ -3973,7 +4432,7 @@ components:
             operación a crédito** (`condicionOperacion` 2, `422`): cómo se
             reparte el plazo entre varias formas de pago no está publicado por
             Hacienda, así que no se adivina. A crédito use `formaPago` con
-            `plazo` y `periodo`. Con `condicionOperacion` 3 (otro) sí se
+            `plazo` y `periodo` (ver «Forma de pago, tipo por tipo» en `SolicitudDte`). Con `condicionOperacion` 3 (otro) sí se
             admite. Hasta 10 filas.
           items: { $ref: "#/components/schemas/Pago" }
           example:
@@ -4491,6 +4950,15 @@ components:
         montoTotalOperacion: { type: number }
         totalPagar: { type: number }
         totalLetras: { type: string, example: VEINTIOCHO 25/100 DOLARES }
+        reteRenta:
+          type: number
+          description: Solo en el 14. Retención de renta (10 %), ya restada de `totalPagar`; `0` si no se pidió.
+        ivaRete:
+          type: number
+          description: Solo en el 01 y el 03. Retención de IVA del 1 % ya restada de `totalPagar`; `0` si no se pidió.
+        ivaPerci:
+          type: number
+          description: Solo en el 03. Percepción de IVA del 1 % ya sumada a `totalPagar`; `0` si no se pidió.
 
     DteSellado:
       type: object
@@ -4604,6 +5072,19 @@ components:
             puede volver a descargar (se rearma desde el archivo), y el barrido
             de reparación reintenta la copia administrada.
 
+            · `indice_pendiente`: el documento está sellado, pero su fila del
+            índice de Facta DTE no se pudo escribir. La reserva del correlativo
+            se deja **firmada** a propósito (no «sellada»). La respuesta trae el
+            documento y su `jws`: guárdelos y **no vuelva a emitirlo**. Para
+            completarlo llame a `POST /v1/dte/{codigoGeneracion}/reintentar`:
+            pregunta a Hacienda, no reenvía nada si ya lo selló y termina el
+            registro. La copia administrada queda `pending` con el código
+            `document_index_unavailable` hasta que el índice exista.
+
+            · `reserva_sin_asentar`: el documento está sellado e indexado, pero
+            la reserva no se pudo cerrar todavía. No emita otra vez; llame a
+            `POST /v1/dte/{codigoGeneracion}/reintentar` para cerrarla.
+
             · `plantilla_no_aplicada`: `representacion.plantilla` pidió una
             plantilla que no se pudo usar. El documento se emitió con la
             plantilla de la empresa. Trae además `campo`
@@ -4614,7 +5095,7 @@ components:
             type: object
             required: [codigo, mensaje]
             properties:
-              codigo: { type: string, enum: [copia_solo_temporal, sin_almacenamiento_duradero, sin_copia_en_servidor, plantilla_no_aplicada, campo_desconocido] }
+              codigo: { type: string, enum: [copia_solo_temporal, sin_almacenamiento_duradero, sin_copia_en_servidor, indice_pendiente, reserva_sin_asentar, plantilla_no_aplicada, campo_desconocido, tipo_item_expor_mapped] }
               mensaje: { type: string }
               campo: { type: string, description: "`plantilla_no_aplicada`: el campo de la petición no atendido. `campo_desconocido`: el camino del campo que no existe.", example: representacion.plantilla.ticket }
               sugerencia: { type: string, description: "Solo `campo_desconocido`: el campo que probablemente quiso decir.", example: "items[0].montoDescu" }
@@ -4791,6 +5272,77 @@ components:
                   id: { type: string, format: uuid }
                   rutaJson: { type: string }
                   verificada: { type: boolean }
+
+    DocumentoPendiente:
+      type: object
+      description: Un documento firmado que Hacienda no ha contestado (o rechazó). Solo metadatos.
+      required: [codigoGeneracion, numeroControl, tipoDte, estado, reintentable]
+      properties:
+        codigoGeneracion: { type: string, format: uuid }
+        numeroControl: { type: string }
+        tipoDte: { type: string }
+        estado: { type: string, enum: [firmado, rechazado] }
+        modo: { type: string, enum: [transitorio, contingencia] }
+        fecEmi: { type: string, format: date, nullable: true }
+        totalPagar: { type: number, nullable: true }
+        firmadoEn: { type: string, format: date-time, nullable: true }
+        antiguedadSegundos: { type: integer, nullable: true }
+        intentos: { type: integer, description: Cuántas veces se reintentó con POST …/reintentar. }
+        ultimaRespuestaMh:
+          type: object
+          nullable: true
+          description: Lo último que Hacienda dijo sin decidir (o su motivo de rechazo).
+          properties:
+            descripcionMsg: { type: string, nullable: true }
+            observaciones: { type: array, items: { type: string } }
+            consultadoEn: { type: string, format: date-time, nullable: true }
+        plazo:
+          type: object
+          nullable: true
+          properties:
+            venceEn: { type: string, format: date-time, nullable: true, description: 24 horas después de la firma. }
+            vencido: { type: boolean }
+            requiereContingencia: { type: boolean }
+        reintentable: { type: boolean, description: "`true`: `POST …/reintentar` puede terminarlo." }
+        motivoNoReintentable:
+          type: string
+          nullable: true
+          enum: [rechazado, documento_de_la_aplicacion, sin_copia_firmada, sin_documento_firmado]
+
+    ReintentoSellado:
+      type: object
+      required: [estado, via, codigoGeneracion, numeroControl, tipoDte, ambiente]
+      properties:
+        estado: { type: string, enum: [sellado] }
+        via: { type: string, enum: [consulta, retransmision, ya_asentado] }
+        codigoGeneracion: { type: string, format: uuid }
+        numeroControl: { type: string }
+        tipoDte: { type: string }
+        ambiente: { type: string, enum: ["00", "01"] }
+        fecEmi: { type: string, format: date }
+        selloRecibido: { type: string }
+        fhProcesamiento: { type: string, nullable: true }
+        observaciones: { type: array, items: { type: string } }
+        advertencias:
+          type: array
+          items: { type: object, properties: { codigo: { type: string, enum: [indice_pendiente, reserva_sin_asentar] }, mensaje: { type: string } } }
+        documento: { type: object, description: "Solo con `advertencias`: el documento firmado." }
+        jws: { type: string, description: "Solo con `advertencias`." }
+
+    ReintentoPendiente:
+      type: object
+      required: [estado, via, codigoGeneracion, numeroControl, mhRespondio]
+      properties:
+        estado: { type: string, enum: [pendiente] }
+        via: { type: string, enum: [retransmision] }
+        codigoGeneracion: { type: string, format: uuid }
+        numeroControl: { type: string }
+        tipoDte: { type: string }
+        ambiente: { type: string }
+        mhRespondio: { type: boolean, description: "`false`: no se llegó a Hacienda. `true`: contestó sin decidir." }
+        detalle: { type: string, nullable: true }
+        observaciones: { type: array, items: { type: string } }
+        siguientePaso: { type: string }
 
     DocumentoRetenido:
       type: object
@@ -5003,6 +5555,11 @@ components:
       properties:
         ok: { type: boolean }
         version: { type: string, const: v1 }
+        capabilities:
+          type: object
+          properties:
+            fseIncomeWithholdingPerLine: { type: boolean, const: true, description: El servidor admite la selección explícita de retención FSE por línea. }
+            descuentoGlobal: { type: boolean, const: true, description: "El servidor lee `descuentoGlobal` en 01, 03, 11 y 14. Sin esta marca, una API anterior lo ignora (y lo advierte como campo desconocido)." }
         region:
           type: string
           nullable: true
@@ -5344,14 +5901,42 @@ x-facta-errores:
     status: 400
     cuando: Cuerpo ausente, que no es JSON, de más de 1 MB, un campo con la forma equivocada, o un código de generación que no tiene forma de UUID.
     hacer: '`details.field` señala el campo cuando lo hay. No gasta correlativo.'
+  fse_withholding_mode_invalid:
+    status: 400
+    cuando: El modo no es per_line, o incomeWithholding tiene una clave ajena al control admitido.
+    hacer: "Use solo `{mode: per_line}`."
+  fse_withholding_legacy_conflict:
+    status: 400
+    cuando: Se combinaron incomeWithholding o decisiones por línea con aplicarReteRenta.
+    hacer: Elija un solo modo de retención.
+  fse_withholding_not_supported:
+    status: 400
+    cuando: Se mandaron controles de retención FSE por línea en otro tipo de DTE.
+    hacer: Quite incomeWithholding y applyIncomeWithholding.
+  fse_withholding_selection_required:
+    status: 400
+    cuando: El modo por línea no tiene líneas o falta una decisión applyIncomeWithholding.
+    hacer: Envíe una decisión booleana para cada línea.
+  fse_withholding_selection_invalid:
+    status: 400
+    cuando: Una decisión applyIncomeWithholding no es boolean.
+    hacer: Envíe true o false sin convertir otros valores.
+  fse_withholding_mode_required:
+    status: 400
+    cuando: Se envió applyIncomeWithholding sin el modo por línea.
+    hacer: Añada incomeWithholding.mode per_line o quite las decisiones.
+  global_discount_not_supported:
+    status: 400
+    cuando: Se mandó `descuentoGlobal` en una nota de crédito (05) o de débito (06).
+    hacer: 'Los montos de una nota salen del documento que corrige: ajuste el valor de las líneas y quite `descuentoGlobal`. No gasta correlativo.'
   validation_failed:
     status: 422
-    cuando: El documento no cumple el esquema oficial del Ministerio de Hacienda, un código no es del catálogo (`formaPago`, `pagos[].codigo`, `exportacion.recintoFiscal`, `.tipoRegimen`, `.regimen`), o `pagos` no suma el total.
-    hacer: '`details.issues` lista cada campo; un código de catálogo trae `details.field`, `details.catalog` y `details.supported`; `pagos` trae `details.totalPagar` y `details.sumaPagos`. **No gasta correlativo**: la validación corre antes de reservar.'
+    cuando: El documento no cumple el esquema oficial del Ministerio de Hacienda, un código no es del catálogo (`formaPago`, `pagos[].codigo`, `exportacion.recintoFiscal`, `.tipoRegimen`, `.regimen`), o `pagos` no suma el total o se manda en una venta a crédito (`condicionOperacion` 2).
+    hacer: '`details.issues` lista cada campo; un código de catálogo trae `details.field`, `details.catalog` y `details.supported`; `pagos` trae `details.totalPagar` y `details.sumaPagos`. Si `pagos` iba en una venta a crédito, el remedio es `formaPago` + `plazo` + `periodo`: vea «Forma de pago, tipo por tipo» en el esquema `SolicitudDte`. **No gasta correlativo**: la validación corre antes de reservar.'
   retention_mixed_class_unsupported:
     status: 422
     cuando: Se pide `aplicarReteRenta` en un documento con alguna línea `exenta` o `no_sujeta` (`items[].tipoVenta`).
-    hacer: 'No se firmó nada ni se gastó correlativo. Emita las líneas exentas o no sujetas en otro documento, o no aplique la retención: la base de la retención de renta para esa mezcla todavía no está confirmada.'
+    hacer: 'No se firmó nada ni se gastó correlativo. La FSE no admite `tipoVenta` en esas líneas; revise los datos y vuelva a emitir sin esa combinación.'
   not_found:
     status: 404
     cuando: No existe el documento, o el `customerId`, o la ruta.
@@ -5388,6 +5973,14 @@ x-facta-errores:
     status: 409
     cuando: La primera petición con esa llave todavía se está procesando.
     hacer: 'Reintente en unos segundos. No se encola a propósito: la primera puede estar gastando un correlativo ahora mismo.'
+  document_not_retryable:
+    status: 409
+    cuando: "`POST /v1/dte/{codigoGeneracion}/reintentar` sobre un documento que la API no puede terminar. `details.motivo`: `documento_de_la_aplicacion` (lo emitió la aplicación), `sin_copia_firmada` (no hay copia firmada que reenviar) o `sin_documento_firmado` (ese número nunca llegó a firmarse)."
+    hacer: "`documento_de_la_aplicacion`: reintente desde Documentos → Pendientes con Hacienda, en la aplicación. `sin_copia_firmada`: escriba a soporte con el código. `sin_documento_firmado`: no hay nada pendiente; consulte `GET /v1/dte/{codigoGeneracion}`."
+  retry_in_progress:
+    status: 409
+    cuando: Otro reintento del mismo documento está en curso.
+    hacer: Espere `Retry-After` (unos segundos) y vuelva a llamar o consulte `GET /v1/dte/{codigoGeneracion}`. No se envió nada.
   prepare_token_invalid:
     status: 422
     cuando: El `prepareToken` venció, es de otra llave, o el documento cambió aunque sea un centavo.
@@ -5570,7 +6163,7 @@ x-facta-errores:
     hacer: Cambie los eventos del webhook que ya existe con `PATCH /v1/webhooks/{id}`.
   temporary_copy_expired:
     status: 410
-    cuando: "Pidió un documento sellado cuya copia temporal cifrada ya se borró (30 días después de sellado, o 2 días después de confirmar que lo guardó) y Facta no tiene otra copia (Almacenamiento Facta)."
+    cuando: "Pidió un documento sellado cuya copia temporal cifrada ya se borró (30 días después de sellado, o 2 días después de que Facta verifique una copia) y Facta no tiene otra copia (Almacenamiento Facta)."
     hacer: "Búsquelo en su propio almacenamiento: es el JSON que guardó. Para que no vuelva a pasar, confirme cada documento (`POST /v1/dte/{codigoGeneracion}/storage-confirmation`) y revise `GET /v1/storage/unconfirmed` cada día."
   nothing_to_repair_from:
     status: 409
@@ -5582,8 +6175,8 @@ x-facta-errores:
     hacer: Descargue otra vez con `GET /v1/dte/{codigoGeneracion}/file`, guarde esos bytes y calcule el hash sobre ellos. No se registró nada.
   service_unavailable:
     status: 503
-    cuando: Algo nuestro no contestó — la base, el registro de peticiones, el de idempotencia.
-    hacer: Reintente con la misma `Idempotency-Key`.
+    cuando: "Algo nuestro no contestó (la base, el registro de peticiones, el de idempotencia) o no se pudo dejar constancia del documento firmado antes de enviarlo."
+    hacer: "Espere `Retry-After` y reintente con la MISMA `Idempotency-Key` y el mismo cuerpo. Si no se pudo dejar constancia, **no se envió nada a Hacienda** y el correlativo se devolvió: el reintento es seguro. Si la emisión ya había firmado y no sabe qué pasó, mire `GET /v1/dte/pendientes` antes de emitir: **nunca** use una llave nueva para la misma venta."
   internal_error:
     status: 500
     cuando: Un fallo que no estaba previsto.

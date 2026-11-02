@@ -35,6 +35,20 @@ class FactaError extends \Exception
     public const INCLUDE_LIMIT_EXCEEDED = 'include_limit_exceeded';
     public const VALIDATION_FAILED = 'validation_failed';
     public const RETENTION_MIXED_CLASS_UNSUPPORTED = 'retention_mixed_class_unsupported';
+    /** HTTP 400: `incomeWithholding.mode` is not `per_line`, or the object carries another key. */
+    public const FSE_WITHHOLDING_MODE_INVALID = 'fse_withholding_mode_invalid';
+    /** HTTP 400: `incomeWithholding` or per-line decisions were combined with `aplicarReteRenta`. Choose one. */
+    public const FSE_WITHHOLDING_LEGACY_CONFLICT = 'fse_withholding_legacy_conflict';
+    /** HTTP 400: per-line FSE withholding controls on a document that is not an FSE (14). */
+    public const FSE_WITHHOLDING_NOT_SUPPORTED = 'fse_withholding_not_supported';
+    /** HTTP 400: per-line mode without lines, or a line without its `applyIncomeWithholding` decision. */
+    public const FSE_WITHHOLDING_SELECTION_REQUIRED = 'fse_withholding_selection_required';
+    /** HTTP 400: an `applyIncomeWithholding` decision that is not a boolean. */
+    public const FSE_WITHHOLDING_SELECTION_INVALID = 'fse_withholding_selection_invalid';
+    /** HTTP 400: `applyIncomeWithholding` sent without `incomeWithholding: ['mode' => 'per_line']`. */
+    public const FSE_WITHHOLDING_MODE_REQUIRED = 'fse_withholding_mode_required';
+    /** HTTP 400: `descuentoGlobal` on a credit (05) or debit (06) note; their amounts come from the corrected document. No correlative spent. */
+    public const GLOBAL_DISCOUNT_NOT_SUPPORTED = 'global_discount_not_supported';
     public const NOT_FOUND = 'not_found';
     public const METHOD_NOT_ALLOWED = 'method_not_allowed';
     public const NOT_SEALED = 'not_sealed';
@@ -77,6 +91,10 @@ class FactaError extends \Exception
     public const RETURN_TYPE_NOT_ALLOWED = 'return_type_not_allowed';
     public const RETURN_PDF_UNAVAILABLE = 'return_pdf_unavailable';
     public const HAS_RETURN_EVENTS = 'has_return_events';
+    /** HTTP 409 from `retryDocument()`: the API cannot finish this document; `details.motivo` says why. */
+    public const DOCUMENT_NOT_RETRYABLE = 'document_not_retryable';
+    /** HTTP 409 from `retryDocument()`: another retry of the same document is running. Wait `Retry-After`; nothing was sent. */
+    public const RETRY_IN_PROGRESS = 'retry_in_progress';
     public const RATE_LIMITED = 'rate_limited';
     public const AMOUNT_LIMIT = 'amount_limit';
     public const MH_REJECTED = 'mh_rejected';

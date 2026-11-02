@@ -6,7 +6,12 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
-No changes yet.
+Additive only: every existing call, constant and return shape keeps working. Matches the staging API contract of 2-Nov-2026 (`tests/fixtures/openapi.yaml` refreshed).
+
+### Added
+
+- **Pending documents.** `listPendingDocuments($filters)` (`GET /v1/dte/pendientes`) lists documents Facta signed whose number is spent but that Hacienda has not answered; `retryDocument($code)` (`POST /v1/dte/{code}/reintentar`, sends the sign key) finishes one with the same signed bytes, never a new document. A `202` `estado: pendiente` is a result, not an error.
+- Error codes `document_not_retryable` and `retry_in_progress` (409), the six `fse_withholding_*` codes (400) and `global_discount_not_supported` (400), as `FactaError` constants.
 
 ## [0.2.0-rc.3] - 2026-11-01
 

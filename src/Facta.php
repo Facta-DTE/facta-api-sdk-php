@@ -75,7 +75,7 @@ final class Facta
 
     /** The routes that open the signing vault and therefore carry the second password. */
     private const SIGNING_PATHS = ['/v1/dte', '/v1/dte/sign'];
-    private const SIGNING_EVENT_PATH = '#^/v1/dte/[^/?]+/(?:invalidate|return)$#';
+    private const SIGNING_EVENT_PATH = '#^/v1/dte/[^/?]+/(?:invalidate|return|reintentar)$#';
     /** Issuing a draft opens the signing vault like POST /v1/dte, so it carries the second password too. */
     private const SIGNING_DRAFT_PATH = '#^/v1/drafts/[^/?]+/issue$#';
 
@@ -573,6 +573,71 @@ final class Facta
     public function getDocumentStatus(string $generationCode, array $options = []): array
     {
         return $this->callArray('GET', '/v1/dte/' . rawurlencode($generationCode), null, $this->options($options, ['timeoutMs']));
+    }
+
+    /**
+     * Documents Facta signed (their number is spent) that Hacienda has not answered yet
+     * (`GET /v1/dte/pendientes`, scope `query`). Look here after any uncertain emission, BEFORE issuing
+     * again: a new emission is another sale, with another code and another control number. Oldest
+     * first; metadata only (never the document or the receiver).
+     *
+     * Filters: `estado` ("firmado", the default: pending; "rechazado": refused, awaiting correction),
+     * `tipoDte`, `limit` (1-100), `cursor` (the previous page's `siguiente`).
+     *
+     * @param array<string, mixed> $filters
+     * @param array<string, mixed> $options `timeoutMs`.
+     * @return array{pendientes: array<int, array<string, mixed>>, siguiente: string|null} Each row carries
+     *         `codigoGeneracion`, `numeroControl`, `tipoDte`, `estado`, `firmadoEn`, `intentos`, `plazo`,
+     *         `reintentable` and `motivoNoReintentable`.
+     * @throws FactaError
+     */
+    public function listPendingDocuments(array $filters = [], array $options = []): array
+    {
+        $options = $this->options($options, ['timeoutMs']);
+        $query = [];
+        foreach ($filters as $name => $value) {
+            if (!in_array($name, ['estado', 'tipoDte', 'limit', 'cursor'], true)) {
+                throw new \InvalidArgumentException('Unknown listPendingDocuments filter: ' . $name . '.');
+            }
+            if ($value !== null) {
+                $query[(string) $name] = (string) $value;
+            }
+        }
+        $page = $this->callArray('GET', '/v1/dte/pendientes' . self::queryString($query), null, $options);
+        if (!isset($page['pendientes']) || !is_array($page['pendientes'])) {
+            $page['pendientes'] = [];
+        }
+        $page['siguiente'] = isset($page['siguiente']) && is_string($page['siguiente']) ? $page['siguiente'] : null;
+        /** @var array{pendientes: array<int, array<string, mixed>>, siguiente: string|null} $page */
+        return $page;
+    }
+
+    /**
+     * Finishes a pending document WITHOUT creating a new one (`POST /v1/dte/{code}/reintentar`, scope
+     * `issue`; carries the sign key). Facta asks Hacienda first and resends the SAME signed bytes (same
+     * `codigoGeneracion`, same `numeroControl`) only if Hacienda never received them; it never signs or
+     * numbers anything, so it is safe to repeat.
+     *
+     * This is the route for a document {@see FactaError::isSignedNotTransmitted()} reported, for a
+     * `contingencia` answer and for any row of {@see Facta::listPendingDocuments()}.
+     *
+     * Answers `estado` "sellado" (`via`: "consulta", "retransmision" or "ya_asentado") or "pendiente"
+     * (HTTP 202: Hacienda did not answer; call again later, do not issue a new one). Throws `mh_rejected`
+     * when Hacienda refuses, `document_not_retryable` (`details.motivo`) for documents the app issued or
+     * that cannot be finished, and `retry_in_progress` while another retry runs
+     * ({@see FactaError::getRetryAfterMs()} says how long to wait).
+     *
+     * @param array<string, mixed> $options `timeoutMs`, `headers`.
+     * @return array<string, mixed>
+     * @throws FactaError
+     */
+    public function retryDocument(string $generationCode, array $options = []): array
+    {
+        if (trim($generationCode) === '') {
+            throw new \InvalidArgumentException('retryDocument() needs the document\'s codigoGeneracion.');
+        }
+        $options = $this->options($options, []);
+        return $this->callArray('POST', '/v1/dte/' . rawurlencode($generationCode) . '/reintentar', null, $options);
     }
 
     /**

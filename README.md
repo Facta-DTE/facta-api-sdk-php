@@ -121,6 +121,8 @@ foreach ($result['unknownFields'] ?? [] as $warning) {
 | `issue($request, $options)` | `POST /v1/dte` | `idempotencyKey`, `deliver`. `customerId` / `productId` are resolved by the server. |
 | `prepare($request)` / `sign($prepared)` | `POST /v1/dte/prepare`, `/sign` | Two-step issuing. `documento` stays the decoded object tree (see below). |
 | `getDocumentStatus($code)` | `GET /v1/dte/{code}` | Also answers for rejected documents. |
+| `listPendingDocuments($filters)` | `GET /v1/dte/pendientes` | Signed documents Hacienda has not answered. Look here BEFORE issuing again. `estado`, `tipoDte`, `limit`, `cursor`. |
+| `retryDocument($code)` | `POST /v1/dte/{code}/reintentar` | Finishes a pending document with the SAME signed bytes; never signs or numbers. Sends the sign key. Safe to repeat. |
 | `listDocuments($filters)` | `GET /v1/dte` | One page; pass `siguiente` back as `cursor`. |
 | `downloadDocument($code, $kind, $options)` | `GET /v1/dte/{code}/file` | `json` (Archivo DTE), `pdf`, `ticket`. Exact bytes, never re-serialized. |
 | `invalidate($code, $request)` | `POST .../invalidate` | Sends the sign key. |
@@ -281,7 +283,7 @@ lacks access to the shared data or the catalogue is not shared.
 | Option | Meaning |
 | --- | --- |
 | `apiKey` | Required. `facta_test_...` or `facta_live_...`. |
-| `signKey` | `factask_...`. Sent only to the routes that sign (`POST /v1/dte`, `/v1/dte/sign`, `.../invalidate`, `.../return`). A `factauk_` unlock key is refused here. |
+| `signKey` | `factask_...`. Sent only to the routes that sign or transmit (`POST /v1/dte`, `/v1/dte/sign`, `.../invalidate`, `.../return`, `.../reintentar`, `/v1/drafts/{id}/issue`). A `factauk_` unlock key is refused here. |
 | `unlockKey` | `factauk_...`. Reserved for the next tier (BYOS destinations and the archive); never sent to the server and not needed for the catalogue. |
 | `baseUrl` | API root (default: the public Facta API). |
 | `timeoutMs` | Budget of one attempt, default `60000`. |
