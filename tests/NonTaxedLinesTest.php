@@ -55,6 +55,7 @@ final class NonTaxedLinesTest extends ClientCase
             $client->issue($fse);
         }, FactaError::NON_TAXED_NOT_SUPPORTED);
         $this->assertSame(['01', '03', '05', '06', '11'], $e->getDetails()['supported']);
+        $this->assertSame('items[1].noGravado', $e->getDetails()['field']);
         foreach (['07', '15'] as $type) {
             $this->local(function () use ($fse, $type): void {
                 NonTaxedLines::check(['tipoDte' => $type] + $fse);
@@ -70,9 +71,10 @@ final class NonTaxedLinesTest extends ClientCase
     {
         $fake = new FakeTransport([]);
         $client = $this->client($fake);
-        $this->local(function () use ($client): void {
+        $e = $this->local(function () use ($client): void {
             $client->issue(['tipoDte' => '03', 'items' => [self::CAPITAL]]);
         }, FactaError::NON_TAXED_REQUIRES_SALE_LINE);
+        $this->assertSame('items[0].noGravado', $e->getDetails()['field'], 'the server names the first non-taxed line');
         $this->local(function (): void {
             NonTaxedLines::check(['tipoDte' => '01', 'items' => [['descripcion' => 'Gratis', 'cantidad' => 1, 'precioUni' => 0], self::CAPITAL]]);
         }, FactaError::NON_TAXED_REQUIRES_SALE_LINE);
@@ -83,7 +85,7 @@ final class NonTaxedLinesTest extends ClientCase
 
     public function testASaleFieldOnANonTaxedLineIsInvalidRequestNamingTheField(): void
     {
-        $fields = ['cantidad' => 1, 'precioUni' => 5, 'montoDescu' => 1, 'tipoVenta' => 'exenta', 'productId' => 'p-1', 'productoId' => 'p-1', 'applyIncomeWithholding' => true];
+        $fields = ['cantidad' => 1, 'precioUni' => 5, 'montoDescu' => 1, 'tipoVenta' => 'exenta', 'productId' => 'p-1', 'applyIncomeWithholding' => true];
         foreach ($fields as $field => $value) {
             $e = $this->local(function () use ($field, $value): void {
                 NonTaxedLines::check(['tipoDte' => '03', 'items' => [self::SALE, self::CAPITAL + [$field => $value]]]);
@@ -106,6 +108,10 @@ final class NonTaxedLinesTest extends ClientCase
             NonTaxedLines::check(['tipoDte' => '01', 'items' => [self::SALE, ['descripcion' => ' '] + self::CAPITAL]]);
         }, FactaError::INVALID_REQUEST);
         NonTaxedLines::check(['tipoDte' => '01', 'items' => [self::SALE, ['noGravado' => -0.12345678] + self::CAPITAL]]);
+        NonTaxedLines::check(['tipoDte' => '01', 'items' => [self::SALE, ['noGravado' => 1e-7] + self::CAPITAL]]);
+        $this->local(function (): void {
+            NonTaxedLines::check(['tipoDte' => '01', 'items' => [self::SALE, ['noGravado' => 1e-9] + self::CAPITAL]]);
+        }, FactaError::INVALID_REQUEST);
     }
 
     public function testARequestWithoutNonTaxedLinesIsNotInspected(): void

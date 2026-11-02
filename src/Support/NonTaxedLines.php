@@ -23,7 +23,7 @@ final class NonTaxedLines
     public const DTE_TYPES = ['01', '03', '05', '06', '11'];
 
     /** Fields a non-taxed line cannot carry: Facta fills them as the Manual says. */
-    private const EXCLUSIVE = ['cantidad', 'precioUni', 'montoDescu', 'tipoVenta', 'productId', 'productoId', 'applyIncomeWithholding'];
+    private const EXCLUSIVE = ['cantidad', 'precioUni', 'montoDescu', 'tipoVenta', 'productId', 'applyIncomeWithholding'];
 
     /** @param mixed $line */
     public static function isNonTaxed($line): bool
@@ -47,12 +47,12 @@ final class NonTaxedLines
         if (is_int($value)) {
             return true;
         }
-        $text = var_export($value, true);
-        if (stripos($text, 'e') !== false) {
-            return false;
-        }
-        $dot = strpos($text, '.');
-        return $dot === false || strlen($text) - $dot - 1 <= 8;
+        $parts = explode('e', strtolower(var_export(abs($value), true)));
+        $mantissa = $parts[0];
+        $exponent = isset($parts[1]) ? (int) $parts[1] : 0;
+        $dot = strpos($mantissa, '.');
+        $places = $dot === false ? 0 : strlen(rtrim($mantissa, '0')) - $dot - 1;
+        return $places - $exponent <= 8;
     }
 
     /**
@@ -76,9 +76,10 @@ final class NonTaxedLines
             return;
         }
         $tipoDte = $request['tipoDte'] ?? null;
+        $first = 'items[' . self::firstNonTaxed($items) . '].noGravado';
         if (is_string($tipoDte) && !in_array($tipoDte, self::DTE_TYPES, true)) {
             self::refuse(FactaError::NON_TAXED_NOT_SUPPORTED, 'Type ' . $tipoDte . ' does not accept non-taxed lines (noGravado).', [
-                'field' => 'items', 'tipoDte' => $tipoDte, 'supported' => self::DTE_TYPES,
+                'field' => $first, 'tipoDte' => $tipoDte, 'supported' => self::DTE_TYPES,
             ]);
         }
         $saleLines = 0;
@@ -113,8 +114,19 @@ final class NonTaxedLines
             }
         }
         if ($saleLines === 0) {
-            self::refuse(FactaError::NON_TAXED_REQUIRES_SALE_LINE, 'A non-taxed line needs at least one sale line (gravada, exenta or no sujeta) above zero.', ['field' => 'items']);
+            self::refuse(FactaError::NON_TAXED_REQUIRES_SALE_LINE, 'A non-taxed line needs at least one sale line (gravada, exenta or no sujeta) above zero.', ['field' => $first]);
         }
+    }
+
+    /** @param array<mixed> $items */
+    private static function firstNonTaxed(array $items): int
+    {
+        foreach (array_values($items) as $index => $item) {
+            if (self::isNonTaxed($item)) {
+                return $index;
+            }
+        }
+        return -1;
     }
 
     /**
