@@ -1535,7 +1535,8 @@ final class Facta
     public function createDraft(array $request, array $options = []): array
     {
         $options = $this->options($options, ['idempotencyKey']);
-        return $this->draftOf($this->callArray('POST', '/v1/drafts', self::draftBody($request), $options));
+        $draft = $this->draftOf($this->callArray('POST', '/v1/drafts', self::draftBody($request), $options));
+        return Warnings::attach($draft, $this->lastWarningHeader);
     }
 
     /**
@@ -1622,7 +1623,8 @@ final class Facta
         $headers = isset($options['headers']) && is_array($options['headers']) ? $options['headers'] : [];
         $headers['If-Match'] = (string) self::draftVersion($version);
         $options['headers'] = $headers;
-        return $this->draftOf($this->callArray('PUT', '/v1/drafts/' . rawurlencode($id), self::draftBody($request), $options));
+        $draft = $this->draftOf($this->callArray('PUT', '/v1/drafts/' . rawurlencode($id), self::draftBody($request), $options));
+        return Warnings::attach($draft, $this->lastWarningHeader);
     }
 
     /**

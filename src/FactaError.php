@@ -35,6 +35,8 @@ class FactaError extends \Exception
     public const INCLUDE_LIMIT_EXCEEDED = 'include_limit_exceeded';
     public const VALIDATION_FAILED = 'validation_failed';
     public const RETENTION_MIXED_CLASS_UNSUPPORTED = 'retention_mixed_class_unsupported';
+    /** HTTP 403: a retention receipt (07) from a company that is not a designated retention agent. Refused before any number is spent; not retried. */
+    public const RETENTION_AGENT_REQUIRED = 'retention_agent_required';
     public const NOT_FOUND = 'not_found';
     public const METHOD_NOT_ALLOWED = 'method_not_allowed';
     public const NOT_SEALED = 'not_sealed';
@@ -165,6 +167,17 @@ class FactaError extends \Exception
     public function getUnknownFields(): array
     {
         return Warnings::unknownFields($this->details);
+    }
+
+    /**
+     * The `campo_ignorado` warnings the server attached to this failure (`details.advertencias`): fields a
+     * remission note (04) or retention receipt (07) has no place for. Empty when there are none.
+     *
+     * @return array<int, array{codigo: string, campo: string, mensaje: string}>
+     */
+    public function getIgnoredFields(): array
+    {
+        return Warnings::ignoredFields($this->details);
     }
 
     /**

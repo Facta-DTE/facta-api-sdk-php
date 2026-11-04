@@ -3275,6 +3275,7 @@ components:
                 - include_limit_exceeded
                 - validation_failed
                 - retention_mixed_class_unsupported
+                - retention_agent_required
                 - not_found
                 - drive_not_configured
                 - drive_reauthorization_required
@@ -5348,6 +5349,10 @@ x-facta-errores:
     status: 422
     cuando: El documento no cumple el esquema oficial del Ministerio de Hacienda, un código no es del catálogo (`formaPago`, `pagos[].codigo`, `exportacion.recintoFiscal`, `.tipoRegimen`, `.regimen`), o `pagos` no suma el total.
     hacer: '`details.issues` lista cada campo; un código de catálogo trae `details.field`, `details.catalog` y `details.supported`; `pagos` trae `details.totalPagar` y `details.sumaPagos`. **No gasta correlativo**: la validación corre antes de reservar.'
+  retention_agent_required:
+    status: 403
+    cuando: Se pidió un comprobante de retención (07) y la empresa no está marcada como agente de retención (`companies.is_retention_agent`).
+    hacer: 'La persona titular activa «agente de retención» en Cuenta → Perfil fiscal de Facta, y solo si Hacienda designó a la empresa como tal; solo un agente designado puede emitir el 07. La llave además tiene que llevar el tipo `07` (si no, `dte_type_not_allowed`: acuñe otra). Se rechaza antes de reservar, así que no gasta correlativo.'
   retention_mixed_class_unsupported:
     status: 422
     cuando: Se pide `aplicarReteRenta` en un documento con alguna línea `exenta` o `no_sujeta` (`items[].tipoVenta`).
