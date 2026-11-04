@@ -268,6 +268,106 @@ its data key; ask them to open it once and repeat. `version_mismatch`, `draft_cl
 `draft_issued`, `draft_not_issuable`, `item_final` (409) are about the draft's state and are never retried
 (`draft_issuing` / `draft_claimed` spent nothing).
 
+#### Remission note (04) and retention receipt (07)
+
+`tipoDte` also accepts `"04"` and `"07"`, on `issue()`, `prepare()`/`sign()` and the drafts. The SDK keeps its rule: the request is an array in the API's own shape, sent as given. It signs nothing and computes no amount, tax or withholding (it does not derive `ivaRetenido` either). A key minted before these types existed carries only the six older ones and gets `dte_type_not_allowed`: mint another with 04/07 ticked. `status()['capabilities']['remissionRetention']` is `true` on a server that has them.
+
+Each rule below is labelled **Normativa** (Hacienda's Normativa v2.0 or its official schema) or **Facta** (a decision of Facta DTE's API).
+
+**Remission note (04): goods that move without a sale.** It accompanies goods that change place or hands without being sold at that moment (consignment, transfer between the company's own establishments, goods on the way to a customer, deposit). It carries the value of the goods but collects nothing; the sale, when it happens, is a 01/03/11. Any company may issue it if its key carries `"04"`.
+
+| Field | Required | Why |
+| --- | --- | --- |
+| `receptor.nombre`, `tipoDocumento`, `numDocumento`, `codActividad` (+ `descActividad`) | yes (or `customerId`; what you spell out wins) | The receiver must be identified (**Facta**, from what the 04 schema requires). |
+| `receptor.bienTitulo` | **yes, no default** | **Normativa** CAT-025: `01` Depósito, `02` Propiedad, `03` Consignación, `04` Traslado, `05` Otros (`BienTitulo::DEPOSITO`...`OTROS`). It is what the document legally states, so Facta never guesses it and a stored customer does not supply it. Missing: `400 invalid_request`; outside the catalogue: `422 validation_failed`; on another type: `400`. |
+| `receptor.nrc`, `correo`, `direccion` | no | The official 04 schema lets them be null; unlike a CCF, a 04 does not demand them (**Facta** decision). |
+| `items` | yes | Like a CCF: `precioUni` **excludes** VAT; `tipoVenta`, `montoDescu` and `numeroDocumento` per line are allowed. |
+| `documentosRelacionados` | no | Sealed 01, 03 or 11 the goods travel with: `[['codigoGeneracion' => $code]]` (the server completes it from your index) or the full form. |
+| `descuentoGlobal` | no | `['modo' => 'monto'|'porcentaje', 'valor' => n]`; accepted on the 04 (**Normativa** lists global discounts per sale class for FE, CCF and NRE; **Facta** applies it to the goods' value). |
+
+```php
+$nre = $facta->issue([
+    'tipoDte' => '04',
+    'receptor' => [
+        'nombre' => 'Comercial Ejemplo, S.A. de C.V.', 'tipoDocumento' => '36', 'numDocumento' => '05110606161016',
+        'codActividad' => '46510',
+        'bienTitulo' => BienTitulo::TRASLADO,                 // required
+        // 'nrc' => '2513113', 'correo' => '...', 'direccion' => [...]   // optional on a 04
+    ],
+    'items' => [['descripcion' => 'Caja de repuestos', 'cantidad' => 2, 'precioUni' => 25, 'tipoItem' => 1]],
+    'descuentoGlobal' => ['modo' => 'porcentaje', 'valor' => 10],   // optional
+], ['idempotencyKey' => 'transfer-0042']);
+```
+
+**Retention receipt (07): a withholding agent's receipt.** A withholding agent designated by Hacienda issues it when it buys from a smaller supplier: it withholds part of the VAT and hands the supplier this receipt. Its lines are not products: each says on how much it withheld and under which code. Only a company marked as a retention agent may issue it; any other gets `403 retention_agent_required` (`FactaError::RETENTION_AGENT_REQUIRED`), refused **before** a number is reserved, so nothing is spent and it is never retried. The owner enables «agente de retención» in Facta's Cuenta → Perfil fiscal, and only if Hacienda designated the company.
+
+* `receptor` is the **supplier** withheld from, a registered taxpayer like a CCF's (`nombre`, NIT in `numDocumento`, `nrc`, `codActividad`, `direccion`, `correo`) or a `customerId`.
+* `items`: 1 to **500** withholding lines. There is no `cantidad`, `precioUni` or `productId`.
+
+| Line field | Required | Notes |
+| --- | --- | --- |
+| `montoSujetoGrav` | yes | Amount withheld on, **without VAT** (**Normativa**, Anexo IV field 103): above zero, at most **two decimals**. |
+| `codigoRetencionMH` | yes | **Normativa** CAT-006: `22` 1 % of VAT (art. 162 Código Tributario), `C4` 13 %, `C9` other (`RetentionCode`). Another value: `422`. |
+| `ivaRetenido` | only with `C9`, where it is required | With `22` and `C4` the server derives it and sending it is `400` (**Facta**: a client never sends computed money; the Normativa only asks that the result adds up, ±$0.01). A one-cent rounding difference against the supplier's document can only be adjusted through `C9`. The SDK never derives it. |
+| `tipoDte`, `numeroDocumento`, `fechaEmision`, `tipoGeneracion` | all-or-nothing group | The document the purchase is documented by: `tipoDte` `"01"` or `"03"`, its `numeroDocumento` (generation code if electronic), `fechaEmision` `YYYY-MM-DD`, `tipoGeneracion` 1 paper / 2 electronic (default 2, only with the document). Send `tipoDte`, `numeroDocumento` and `fechaEmision` **together or not at all**. A paper purchase, or one from an excluded subject, carries none. A partial group is refused. |
+| `descripcion` | no | Free text. |
+
+For an **electronic** reference, the supplier's NIT must match the referenced document's issuer: otherwise Hacienda answers `[emisor.nit] DATO NO COINCIDE CON DTE` (**Normativa**, a Hacienda check at transmission). Use a paper purchase (no group, usually `C9` with the amount stated) when there is no electronic document. The document's `resumen.totalIva` is always `0.00` (**Facta**, from Hacienda's test validator, which refuses a VAT total on a 07): the withholding lives in the lines and in the summary's `totalSujetoRetencion` and `totalIvaRetenido`. Do not expect or compute a VAT total on a 07.
+
+```php
+$cr = $facta->issue([
+    'tipoDte' => '07',
+    'receptor' => [
+        'nombre' => 'ZD, S.A. de C.V.', 'tipoDocumento' => '36', 'numDocumento' => '05110606161016',
+        'nrc' => '2513113', 'codActividad' => '46510',
+        'direccion' => ['departamento' => '06', 'municipio' => '20', 'distrito' => '01', 'complemento' => 'Colonia Centro, San Miguel'],
+        'correo' => 'proveedor@example.com',
+    ],
+    'items' => [
+        ['tipoDte' => '03', 'numeroDocumento' => '1BC3E8A1-1111-4111-8111-11111111ABCD', 'fechaEmision' => '2026-10-05',
+         'montoSujetoGrav' => 1000, 'codigoRetencionMH' => RetentionCode::IVA_1_PERCENT],       // ivaRetenido derived
+        ['montoSujetoGrav' => 250.5, 'codigoRetencionMH' => RetentionCode::OTHER, 'ivaRetenido' => 2.5,
+         'descripcion' => 'Compra en papel'],                                                    // paper purchase, no reference
+    ],
+], ['idempotencyKey' => 'retention-0099']);
+```
+
+**As a draft** (nothing is signed, no number spent) both types use the same body as `issue()`:
+
+```php
+$facta->createDraft(['tipoDte' => '04', /* same body */ 'referencia' => 'transfer-0042'], ['idempotencyKey' => 'transfer-0042']);
+$facta->createDraft(['tipoDte' => '07', /* same body */ 'referencia' => 'retention-0099'], ['idempotencyKey' => 'retention-0099']);
+```
+
+A 07 draft from a company that is not a retention agent is `403 retention_agent_required` and no draft is stored.
+
+**What is ignored, and why.** Neither document settles anything: their schemas have no `condicionOperacion`, `formaPago`, `pagos`, `plazo` or `periodo`, and the 07 has no `descuentoGlobal` either (the 04 does) nor, on its lines, `cantidad`, `precioUni`, `uniMedida` or `tipoItem`. Sent anyway, they are **ignored, never an error**: the document is issued without them and the answer carries one `advertencias` entry per field, `['codigo' => 'campo_ignorado', 'campo' => ..., 'mensaje' => ...]`. The SDK lists them in `ignoredFields` on `issue()`, `prepare()`, `sign()`, `issueDraft()`, `createDraft()` and `updateDraft()` results (only when there are any), and `FactaError::getIgnoredFields()` reads them from a failure. `apendice` is not accepted (`400`).
+
+```php
+foreach ($nre['ignoredFields'] ?? [] as $warning) {
+    error_log('Facta ignored ' . $warning['campo'] . ': ' . $warning['mensaje']);
+}
+```
+
+**Common mistakes (04 and 07)**
+
+| Mistake | What happens | Do this |
+| --- | --- | --- |
+| 04 without `receptor.bienTitulo` | `400 invalid_request` | Always choose the title (CAT-025). |
+| `bienTitulo` outside `01`-`05`, or on another type | `422` / `400` | Only on a 04, only those codes. |
+| `pagos`/`formaPago`/`condicionOperacion` on a 04 or 07 | Ignored, `campo_ignorado` | Leave them out. |
+| `descuentoGlobal` on a 07 | Ignored, `campo_ignorado` (valid on a 04) | Leave it out. |
+| `ivaRetenido` with `22` or `C4` | `400` | Let the server derive it; use `C9` to state it. |
+| `C9` without `ivaRetenido` | `400` | State the amount withheld. |
+| Only some of `tipoDte`/`numeroDocumento`/`fechaEmision` | Refused | All three, or none. |
+| `cantidad`/`precioUni` on a 07 line | Not part of the line | `montoSujetoGrav` only. |
+| More than 500 lines; `montoSujetoGrav` with 3 decimals or ≤ 0 | `400`/`422` | Split the document; two decimals. |
+| Electronic reference whose issuer is not the supplier | Hacienda: `[emisor.nit] DATO NO COINCIDE CON DTE` | Reference the supplier's own document, or send a paper line. |
+| 07 from a company that is not a retention agent | `403 retention_agent_required` | The owner enables «agente de retención», only if Hacienda designated it. |
+| Key without `"04"`/`"07"` | `dte_type_not_allowed` | Mint a key with those types. |
+
+**Not working yet.** The API accepts a credit or debit note (05/06) whose `documentosRelacionados` points at a sealed 07, but Hacienda rejects it today (its credit-note-over-retention shape differs). Do not build on it until this note is removed. A 04 may relate a sealed 01, 03 or 11; a 05/06 may relate a sealed 03.
+
 #### Production keys and companies still in test
 
 A production key (`facta_live_`) is refused with `environment_not_allowed` (403) on emission and on the
@@ -299,7 +399,7 @@ codes the TypeScript SDK retries: `idempotency_in_flight`, `mh_unreachable`, `se
 `correlative_unavailable`, `storage_unavailable`, `data_grant_unavailable`, `data_epoch_stale` and `network_error` (a connection failure or
 timeout), up to `maxRetries` extra attempts, waiting for `Retry-After` when the server sends it.
 Every attempt resends the same bytes with the same `Idempotency-Key`, so a retry cannot issue twice.
-When the attempts run out the last error is thrown; any other code is final.
+When the attempts run out the last error is thrown; any other code is final (for example `retention_agent_required`, `403`: a 07 from a company that is not a retention agent).
 
 Secrets (API key, sign key, unlock key) are removed from messages and `details`.
 
@@ -377,6 +477,14 @@ calcula impuestos**: eso lo hace el servidor.
   desbloqueo y llegan en una versión posterior. Desde 0.2.0 el catálogo se lee siempre por el API
   (también cifrado y compartido con su llave), `customerId`/`productId` los resuelve el servidor,
   y hay lectura de cambios (`listCatalogChanges`) y webhooks con verificación de firma.
+* **Nota de remisión (04) y comprobante de retención (07):** `issue()`, `prepare()`/`sign()` y los
+  borradores aceptan `tipoDte` `"04"` y `"07"`; el cuerpo viaja tal como lo arma usted, sin firmar ni
+  calcular nada. La 04 exige `receptor.bienTitulo` (CAT-025: 01 Depósito, 02 Propiedad, 03 Consignación,
+  04 Traslado, 05 Otros). El 07 solo lo emite un agente de retención (si no, `403 retention_agent_required`,
+  sin gastar correlativo ni reintentos); sus líneas llevan `montoSujetoGrav` y `codigoRetencionMH`
+  (`22`, `C4`, `C9`), y `ivaRetenido` solo con `C9`. Los campos de pago que no les corresponden se
+  ignoran y llegan como `ignoredFields` (`campo_ignorado`). Una nota de crédito o débito sobre un 07
+  todavía la rechaza Hacienda: no la use. Detalle completo en la sección en inglés.
 * **Copia temporal:** Facta guarda una copia temporal cifrada de cada documento sellado y la borra
   2 días después de que usted lo marque como guardado, o 30 días después de sellarlo si nadie lo
   marca. Guarde el JSON en su almacenamiento y avise con `confirmDocumentStorage()`, o deje que

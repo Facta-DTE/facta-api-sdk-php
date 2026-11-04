@@ -6,7 +6,19 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
-No changes yet.
+Additive. Follows the TypeScript SDK (remission note 04 and retention receipt 07).
+
+### Added
+
+- **`tipoDte` `"04"` (Nota de remisión) and `"07"` (Comprobante de retención)** on `issue()`, `prepare()`/`sign()` and the drafts. Requests are arrays sent as given; the SDK signs nothing and computes no amount, tax or `ivaRetenido`. 04: `receptor.bienTitulo` (CAT-025) required, `nrc`/`correo`/`direccion` optional, items like a CCF, optional `documentosRelacionados` (01/03/11) and `descuentoGlobal`. 07: retention agents only, supplier receiver, withholding lines (`montoSujetoGrav`, `codigoRetencionMH` 22/C4/C9, `ivaRetenido` only with C9, an all-or-nothing reference group, up to 500). Documented in the README with Normativa-versus-Facta labels and common mistakes.
+- `BienTitulo` and `RetentionCode` constant classes (CAT-025, CAT-006).
+- `FactaError::RETENTION_AGENT_REQUIRED` (`retention_agent_required`, HTTP 403): a 07 from a company that is not a retention agent, refused before any number is spent. Final, never retried.
+- **`campo_ignorado` warnings.** Payment fields sent on a 04 or 07 (and `descuentoGlobal` on a 07) are ignored by the server; the SDK lists them in `ignoredFields` on `issue()`, `prepare()`, `sign()`, `issueDraft()`, `createDraft()` and `updateDraft()` results, and `FactaError::getIgnoredFields()` reads them from a failure. `createDraft()`/`updateDraft()` results now also carry `unknownFields`/`factaWarning` when there is something to report.
+- `tests/fixtures/openapi.yaml`: only the new error code was added (the full current contract also lists routes this branch does not wrap yet).
+
+### Known limit
+
+- A credit or debit note (05/06) related to a sealed 07 is accepted by the API but rejected by Hacienda today; it is documented as not working yet.
 
 ## [0.2.0-rc.3] - 2026-11-01
 
