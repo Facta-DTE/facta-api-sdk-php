@@ -6,7 +6,11 @@ All notable changes to this package are documented here. The format follows
 
 ## [Unreleased]
 
-Every existing call, constant and return shape keeps working; the one behaviour change is under «Changed». Matches the staging API contract of 2-Nov-2026 (`tests/fixtures/openapi.yaml` refreshed).
+No changes yet.
+
+## [0.2.0] - 2026-11-14
+
+First stable release since 0.1.0: the sum of 0.2.0-rc.1 to rc.3 and the notes below, matching the production API promoted on 2026-11-14. Every call, constant, option and return shape of 0.1.0 keeps working; the one behaviour change is under «Changed». Install with `composer require facta-dte/api` (no prerelease constraint needed).
 
 ### Added
 
