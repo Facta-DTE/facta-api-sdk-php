@@ -74,6 +74,7 @@ object, and `new \stdClass()` is an empty object `{}`.
 ### Discounts, several payments, VAT class and warnings
 
 ```php
+use Facta\Api\DescuentoGlobal;
 use Facta\Api\Facta;
 use Facta\Api\Pago;
 use Facta\Api\SaleType;
@@ -90,6 +91,7 @@ $result = $facta->issue([
         ['descripcion' => 'Libro', 'cantidad' => 1, 'precioUni' => 10, 'tipoVenta' => SaleType::EXENTA],
     ],
     'pagos' => [new Pago('01', 25), new Pago('02', 40, 'VOUCHER-0042')],   // must add up to the total, to the cent
+    'descuentoGlobal' => DescuentoGlobal::porcentaje(10),   // the whole sale; 01, 03, 11, 14
     'aplicarRetencionIva' => true,    // 01 and 03 only; never automatic
     // 'aplicarPercepcionIva' => true // 03 only
 ]);
@@ -104,12 +106,75 @@ foreach ($result['unknownFields'] ?? [] as $warning) {
 * `pagos` takes 1 to 10 rows (01, 03, 11, 14), not together with `formaPago`, not on 05/06, not on credit.
   `Pago` is optional: plain arrays work too.
 * `tipoVenta` (`gravada` default, `exenta`, `no_sujeta`) is yours to choose and valid in 01, 03, 05, 06.
+* `descuentoGlobal` is the discount of the **whole sale** (01, 03, 11, 14), after the line discounts:
+  `DescuentoGlobal::porcentaje(10)` (10 %, also `resumen.porcentajeDescuento`) or `DescuentoGlobal::monto(12.50)`
+  (dollars, in the same VAT basis as `precioUni`: VAT included on 01, net on 03 and 11), or the plain array
+  `['modo' => 'monto'|'porcentaje', 'valor' => ...]`. Facta spreads it over the sale classes; VAT, withholdings,
+  `totalPagar` and the sum of `pagos` are computed on the discounted amounts. On a note (05, 06) it is
+  `global_discount_not_supported`; above the subtotal it is `invalid_request` (`details.field`, `details.subtotal`).
+  `status()['capabilities']['descuentoGlobal']` says whether the server reads it (an older one ignores it and
+  warns `campo_desconocido`).
+* **FSE (14) income withholding on some lines only:** send `'incomeWithholding' => ['mode' => 'per_line']`
+  instead of `aplicarReteRenta`, and an explicit boolean `applyIncomeWithholding` on **every** line; the rate
+  applies to the sum of the marked lines after their discounts. Available when
+  `status()['capabilities']['fseIncomeWithholdingPerLine']` is true. The two forms exclude each other; the server
+  explains each refusal with one of the `fse_withholding_*` codes (`FactaError::FSE_WITHHOLDING_*`). The SDK does
+  not pre-check them. The treatment of an independent purchase of goods mixed with services is still pending
+  DGII confirmation: confirm it with your accountant.
 * **Unknown fields are always a warning, never an error.** A request field Facta DTE does not know is ignored and
   is not part of the document; the answer says so in `advertencias` (`campo_desconocido`, with `campo` and
   `sugerencia`). The SDK also lists them in `unknownFields` and parses the `Facta-Warning` header into
-  `factaWarning` (`['code' => ..., 'count' => ...]`), on `issue()`, `prepare()`, `sign()` and `issueDraft()`, only when
+  `factaWarning` (`['code' => ..., 'count' => ...]`), on `issue()`, `prepare()`, `sign()`, `createDraft()`, `updateDraft()` and `issueDraft()`, only when
   there is something to report. On a failure, `FactaError::getUnknownFields()` and `getFactaWarning()` read them.
   Check the first answer of your integration: an ignored field is a discount or a payment the document does not carry.
+
+### Non-taxed lines (`noGravado`)
+
+A charge or credit that does not affect the tax base («Cargos/Abonos que no afectan la base imponible»,
+Manual Funcional del Sistema de Transmisión v2.0 §XII) is its **own line** on 01, 03, 05, 06 and 11. A loan
+instalment is the usual case: the interest is a sale (exempt here), the repaid capital is not.
+
+```php
+use Facta\Api\NonTaxedLine;
+
+if (empty($facta->status()['capabilities']['noGravado'])) {
+    throw new RuntimeException('This API does not accept noGravado lines yet.');
+}
+$result = $facta->issue([
+    'tipoDte'  => '03',
+    'receptor' => ['customerId' => $customerId],
+    'items'    => [
+        ['descripcion' => 'Intereses de la cuota 7', 'cantidad' => 1, 'precioUni' => 1250, 'tipoItem' => 2, 'tipoVenta' => 'exenta'],
+        new NonTaxedLine('Capital', 50000, NonTaxedLine::SERVICIO, 'CAP'),
+        // or the plain array ['descripcion' => 'Capital', 'noGravado' => 50000, 'tipoItem' => 2, 'codigo' => 'CAP']
+    ],
+], ['idempotencyKey' => 'loan-77-instalment-7']);
+$result['totales']['totalNoGravado']; // 50000, already inside totalPagar
+```
+
+* The line is `descripcion`, `noGravado` (> 0 charge, < 0 credit; never 0, below 1e11 in absolute value, at most 8 decimals), `tipoItem`
+  (1 bien, 2 servicio, 3 ambos; **required**, Facta never picks it) and an optional `codigo`. It cannot carry
+  `cantidad`, `precioUni`, `montoDescu`, `tipoVenta` or `productId` (`invalid_request` naming the field), not even
+  as `null` (json_encode() sends it); `uniMedida` may be left out, and if sent it must be 99.
+* Facta writes it as the Manual says (cantidad 1, `uniMedida` 99, `precioUni` 0, every sale column and tax 0) and
+  adds it **only** to `resumen.totalNoGravado` and `totalPagar`; VAT, subtotal, discounts and the withholding and
+  perception bases do not move. `pagos` must add up to the new total to pay.
+* At least one sale line (gravada, exenta or no sujeta) above zero is required (`non_taxed_requires_sale_line`);
+  on 14 it is `non_taxed_not_supported`. The SDK checks both, and the line shape, **before sending**
+  (`FactaError` with that code, status 0, `details['local']` true), so nothing is reserved. Credits that leave
+  the total below zero are `non_taxed_total_negative` from the server. None of these spends a number.
+* **Exports (11):** every good or service you sell is a sale line, taxed at 0 %. Only a charge that is **not** a
+  sale, such as reimbursing a courier cost paid for the buyer, goes as `noGravado`:
+
+```php
+'items' => [
+    ['descripcion' => 'Software development, October', 'cantidad' => 1, 'precioUni' => 4800, 'tipoItem' => 2],
+    ['descripcion' => 'Reembolso de gastos de courier', 'noGravado' => 35.4, 'tipoItem' => 2],
+],
+```
+
+* Credit (05) and debit (06) notes accept their own non-taxed lines too. The same line works in `prepare()`,
+  `createDraft()`, `updateDraft()` and `issueDraft()`.
 
 ### Methods
 
@@ -121,6 +186,8 @@ foreach ($result['unknownFields'] ?? [] as $warning) {
 | `issue($request, $options)` | `POST /v1/dte` | `idempotencyKey`, `deliver`. `customerId` / `productId` are resolved by the server. |
 | `prepare($request)` / `sign($prepared)` | `POST /v1/dte/prepare`, `/sign` | Two-step issuing. `documento` stays the decoded object tree (see below). |
 | `getDocumentStatus($code)` | `GET /v1/dte/{code}` | Also answers for rejected documents. |
+| `listPendingDocuments($filters)` | `GET /v1/dte/pendientes` | Signed documents Hacienda has not answered. Look here BEFORE issuing again. `estado`, `tipoDte`, `limit`, `cursor`. |
+| `retryDocument($code)` | `POST /v1/dte/{code}/reintentar` | Finishes a pending document with the SAME signed bytes; never signs or numbers. Sends the sign key. Safe to repeat. |
 | `listDocuments($filters)` | `GET /v1/dte` | One page; pass `siguiente` back as `cursor`. |
 | `downloadDocument($code, $kind, $options)` | `GET /v1/dte/{code}/file` | `json` (Archivo DTE), `pdf`, `ticket`. Exact bytes, never re-serialized. |
 | `invalidate($code, $request)` | `POST .../invalidate` | Sends the sign key. |
@@ -263,6 +330,10 @@ $issued = $facta->issueDraft($draft['borradorId'], $draft['version'], $request, 
 $facta->cancelDraft($draft['borradorId']);                // only while pending and closed
 ```
 
+Drafts warn about unknown fields like `issue()` does (`unknownFields`, `factaWarning`, also on a replay with the same
+`idempotencyKey` and on `updateDraft()`), but **the ignored field is not stored in the draft**: the draft keeps the
+request as the server resolved it. Fix the field and save a new version with `updateDraft()` before it is issued.
+
 `drafts_not_ready` (409): the owner has not opened Facta with their vault since the company began sharing
 its data key; ask them to open it once and repeat. `version_mismatch`, `draft_claimed`, `draft_issuing`,
 `draft_issued`, `draft_not_issuable`, `item_final` (409) are about the draft's state and are never retried
@@ -281,7 +352,7 @@ lacks access to the shared data or the catalogue is not shared.
 | Option | Meaning |
 | --- | --- |
 | `apiKey` | Required. `facta_test_...` or `facta_live_...`. |
-| `signKey` | `factask_...`. Sent only to the routes that sign (`POST /v1/dte`, `/v1/dte/sign`, `.../invalidate`, `.../return`). A `factauk_` unlock key is refused here. |
+| `signKey` | `factask_...`. Sent only to the routes that sign or transmit (`POST /v1/dte`, `/v1/dte/sign`, `.../invalidate`, `.../return`, `.../reintentar`, `/v1/drafts/{id}/issue`). A `factauk_` unlock key is refused here. |
 | `unlockKey` | `factauk_...`. Reserved for the next tier (BYOS destinations and the archive); never sent to the server and not needed for the catalogue. |
 | `baseUrl` | API root (default: the public Facta API). |
 | `timeoutMs` | Budget of one attempt, default `60000`. |
@@ -300,6 +371,29 @@ codes the TypeScript SDK retries: `idempotency_in_flight`, `mh_unreachable`, `se
 timeout), up to `maxRetries` extra attempts, waiting for `Retry-After` when the server sends it.
 Every attempt resends the same bytes with the same `Idempotency-Key`, so a retry cannot issue twice.
 When the attempts run out the last error is thrown; any other code is final.
+
+**Signed but not transmitted.** One `503 service_unavailable` is different: the document IS (or may be) signed
+and its control number spent, but it was not sent to Hacienda from that request. `isSignedNotTransmitted()` is
+true and `signedNotTransmitted()` returns `codigoGeneracion`, `numeroControl`, `estado`
+(`firmado_sin_transmitir`), `confirmado` and `siguientePaso`. **Do not issue again**, with this key or another:
+it would be a second sale. The same request with the same `Idempotency-Key` only replays that answer, so the SDK
+does not repeat it. Finish the document with the retry route:
+
+```php
+try {
+    $result = $facta->issue($request, ['idempotencyKey' => 'order-1234']);
+} catch (FactaError $e) {
+    $pending = $e->signedNotTransmitted();
+    if ($pending === null) {
+        throw $e;
+    }
+    // Keep $pending['codigoGeneracion'] with the order, then (now or later):
+    $result = $facta->retryDocument($pending['codigoGeneracion']);   // same signed bytes; 'sellado' or 'pendiente'
+}
+```
+
+`listPendingDocuments()` lists every document in that state; look there before issuing again after any uncertain
+answer (a `contingencia`, a timeout, a `503`).
 
 Secrets (API key, sign key, unlock key) are removed from messages and `details`.
 
@@ -388,6 +482,22 @@ calcula impuestos**: eso lo hace el servidor.
   `STAGING_FACTA_UNLOCK_KEY` (opcionales: `STAGING_FACTA_DTE_FIXTURES_JSON` y
   `STAGING_FACTA_DELIVERY_EMAIL`) del entorno `staging-live-test`; si falta uno, la ejecución
   falla en lugar de pasar en silencio.
+* **Descuento global y retención de renta por línea (FSE):** `descuentoGlobal` (`DescuentoGlobal::monto()` o
+  `::porcentaje()`, o el arreglo `['modo' => ..., 'valor' => ...]`) en 01, 03, 11 y 14; en 05/06 el servidor
+  responde `global_discount_not_supported`. En la FSE, `incomeWithholding => ['mode' => 'per_line']` con
+  `applyIncomeWithholding` en cada línea. `status()['capabilities']` dice si el servidor los admite.
+* **Líneas no gravadas (`noGravado`):** un cargo (positivo) o abono (negativo) que no afecta la base imponible
+  es una línea propia en 01, 03, 05, 06 y 11: `new NonTaxedLine('Capital', 50000, NonTaxedLine::SERVICIO, 'CAP')`
+  o el arreglo `['descripcion' => ..., 'noGravado' => ..., 'tipoItem' => ...]` (`tipoItem` obligatorio). Solo
+  mueve `totalNoGravado` y `totalPagar`. Necesita al menos una línea de venta con valor
+  (`non_taxed_requires_sale_line`) y en el 14 es `non_taxed_not_supported`; el SDK lo revisa antes de enviar. En
+  una exportación, todo lo vendido es una línea de venta al 0 %; solo un cargo que no es venta (un reembolso) va
+  como `noGravado`.
+* **Borradores:** `createDraft()` y `updateDraft()` también avisan de campos desconocidos (`unknownFields`,
+  `factaWarning`). El campo ignorado no queda en el borrador: corríjalo y guarde una versión nueva.
+* **Firmado sin transmitir:** si `FactaError::isSignedNotTransmitted()` es verdadero, el documento ya está firmado
+  y su correlativo gastado. **No emita otro**: termine ese documento con
+  `retryDocument($e->signedNotTransmitted()['codigoGeneracion'])`. `listPendingDocuments()` lista los pendientes.
 * Si el servidor tiene certificados desactualizados, indique la ruta de un paquete de
   certificados en la opción `caBundle`. La verificación TLS nunca se desactiva.
 

@@ -44,6 +44,8 @@ final class ContractParityTest extends TestCase
         'POST /v1/dte/{codigoGeneracion}/entrega/whatsapp' => 'deliverWhatsApp',
         'GET /v1/dte/{codigoGeneracion}/entrega' => 'getDelivery',
         'GET /v1/dte/holding' => 'listHolding',
+        'GET /v1/dte/pendientes' => 'listPendingDocuments',
+        'POST /v1/dte/{codigoGeneracion}/reintentar' => 'retryDocument',
         'GET /v1/customers' => 'listCustomers',
         'POST /v1/customers' => 'createCustomer',
         'GET /v1/customers/{id}' => 'getCustomer',
